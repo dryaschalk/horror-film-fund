@@ -259,8 +259,8 @@ const MONO_JAR_SHORT_ID = '8iRokMYoeQ';
 // НАСТРОЙКИ SUPABASE — ИЩИ ЭТОТ КОММЕНТАРИЙ В КОДЕ (Ctrl+F: НАСТРОЙКИ SUPABASE)
 // Вставь Project URL и Publishable/anon key из настроек своего проекта Supabase.
 // Never put a service_role key or any database password in browser code.
-const SUPABASE_URL = 'https://mthkieqrtpcembhpiiku.supabase.co';
-const SUPABASE_ANON_KEY = 'sb_publishable_7t8cCY4QpxL6NWm-c6EBKw_4AHA_dcL';
+const SUPABASE_URL = 'PASTE_SUPABASE_PROJECT_URL_HERE';
+const SUPABASE_ANON_KEY = 'PASTE_SUPABASE_PUBLISHABLE_OR_ANON_KEY_HERE';
 let supabaseClient = null;
 if (window.supabase && SUPABASE_URL.startsWith('https://') && !SUPABASE_ANON_KEY.includes('PASTE_')) {
   supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
