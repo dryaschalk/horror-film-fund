@@ -1,6 +1,416 @@
 <!doctype html>
-<html lang="ru">
-<head>
+<html lang="en-US" class="transparentSkybridgeBackground desktopSkybridge dark" data-theme="dark" style="color-scheme: dark; --safe-area-inset-top: 0px; --safe-area-inset-bottom: 0px; --safe-area-inset-left: 0px; --safe-area-inset-right: 0px;"><head><style>@layer sandbox-defaults{html,body,#root{margin:0;padding:0}}</style><script data-sites-preview-runtime="" data-annotation-cursor="url(&quot;data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2226%22%20height%3D%2226%22%20viewBox%3D%220%200%2026%2026%22%3E%3Cpath%20d%3D%22M13%200.825a12.175%2012.175%200%200%201%200%2024.35H3a2.175%202.175%200%200%201-2.175-2.175V13A12.175%2012.175%200%200%201%2013%200.825Z%22%20fill%3D%22%23339cff%22%20stroke%3D%22white%22%20stroke-width%3D%221.65%22%2F%3E%3C%2Fsvg%3E&quot;) 0 25, crosshair">/* oxlint-disable typescript/no-unsafe-argument, typescript/no-unsafe-call, typescript/no-unsafe-return */
+// Runs only inside the preview sandbox; import with ?raw in the host.
+(() => {
+  const nodeAttribute = "data-sites-preview-node";
+  const nodeSelector = "[" + nodeAttribute + "]";
+  let state = { mode: "interact", revision: 0, targets: [] };
+  let hovered = null;
+  let gesture = null;
+  let suppressClick = false;
+  let frame = 0;
+  const overlay = document.createElement("div");
+  overlay.setAttribute("data-sites-preview-runtime", "");
+  overlay.setAttribute("aria-hidden", "true");
+  overlay.setAttribute("popover", "manual");
+  const shadow = overlay.attachShadow({ mode: "closed" });
+  const styles = document.createElement("style");
+  styles.textContent = `
+:host {
+  position: fixed;
+  inset: 0;
+  width: auto;
+  height: auto;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  overflow: visible;
+  background: transparent;
+  pointer-events: none;
+}
+div {
+  /* Match Sites' SitePreviewAnnotations.module.css outline. */
+  position: fixed;
+  box-sizing: border-box;
+  pointer-events: none;
+  border: 2px solid #0285ff;
+  border-radius: 3px;
+  background: rgb(2 133 255 / 8%);
+}
+`;
+  shadow.append(styles);
+  const annotationCursorStyle = document.createElement("style");
+  annotationCursorStyle.setAttribute("data-sites-preview-runtime", "");
+  annotationCursorStyle.textContent =
+    ":root, :root * { cursor: " +
+    (document.currentScript?.getAttribute("data-annotation-cursor") ||
+      "crosshair") +
+    " !important; }";
+  annotationCursorStyle.media = "not all";
+
+  const getId = (element) => element.getAttribute(nodeAttribute);
+  const excluded =
+    "[data-sites-preview-runtime],script,style,template,noscript,iframe,object,embed,link,meta,svg,canvas,video,audio,input,textarea,select,option";
+  const selectable = (element) =>
+    element?.nodeType === 1 &&
+    !element.closest(excluded) &&
+    element.closest(nodeSelector);
+  const getNode = (target) => {
+    if (target.rendered) {
+      try {
+        return document.querySelector(target.rendered.selector);
+      } catch {
+        return null;
+      }
+    }
+    return [...document.querySelectorAll(nodeSelector)].find(
+      (node) => getId(node) === target.nodeId,
+    );
+  };
+  const getTarget = (element) => {
+    const source = element.closest(nodeSelector);
+    if (!source) {
+      return null;
+    }
+    const nodeId = getId(source);
+    if (source === element) {
+      return { nodeId };
+    }
+    const path = [];
+    let current = element;
+    while (current && current !== document.body) {
+      const parent = current.parentElement;
+      if (!parent) {
+        return null;
+      }
+      path.unshift(
+        ":nth-child(" + ([...parent.children].indexOf(current) + 1) + ")",
+      );
+      current = parent;
+    }
+    path.unshift("body");
+    const selector = path.join(" > ");
+    if (selector.length > 2000) {
+      return null;
+    }
+    return {
+      nodeId,
+      rendered: {
+        selector,
+        tagName: element.tagName.toLowerCase().slice(0, 64),
+        text: (
+          element.getAttribute("aria-label") ||
+          element.getAttribute("alt") ||
+          element.textContent ||
+          ""
+        )
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 200),
+        html: element.outerHTML.slice(0, 1500),
+      },
+    };
+  };
+  const targetAt = (event) => (selectable(event.target) ? event.target : null);
+  const active = () => state.mode === "select";
+  const isDragging = (value) =>
+    value.dragging ||
+    Math.hypot(value.x - value.startX, value.y - value.startY) >= 4;
+  const cancelEvent = (event) => {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  };
+  const select = (nodes, event) => {
+    const targets = nodes.slice(0, 20).map(getTarget).filter(Boolean);
+    state = { ...state, targets };
+    if (window.openai && typeof window.openai.setWidgetState === "function") {
+      Promise.resolve(
+        window.openai.setWidgetState({
+          ...state,
+          editorEvent: {
+            revision: state.revision,
+            event: {
+              type: "select",
+              targets,
+              anchor: event
+                ? {
+                    x: Math.max(
+                      0,
+                      Math.min(1, event.clientX / window.innerWidth),
+                    ),
+                    y: Math.max(
+                      0,
+                      Math.min(1, event.clientY / window.innerHeight),
+                    ),
+                  }
+                : undefined,
+            },
+          },
+        }),
+      ).catch(() => {});
+    }
+    paint();
+  };
+  const box = (rect, kind) => {
+    const element = document.createElement("div");
+    if (kind) {
+      element.setAttribute("data-" + kind, "");
+    }
+    Object.assign(element.style, {
+      left: rect.left + "px",
+      top: rect.top + "px",
+      width: rect.width + "px",
+      height: rect.height + "px",
+    });
+    shadow.append(element);
+  };
+  const regionRect = (value) => ({
+    left: Math.min(value.startX, value.x),
+    top: Math.min(value.startY, value.y),
+    width: Math.abs(value.startX - value.x),
+    height: Math.abs(value.startY - value.y),
+  });
+  function paint() {
+    shadow.replaceChildren(styles);
+    if (!active()) {
+      return;
+    }
+    const selectedNodes = state.targets.map(getNode);
+    for (const element of selectedNodes) {
+      if (element) {
+        box(element.getBoundingClientRect());
+      }
+    }
+    if (hovered?.isConnected && !selectedNodes.includes(hovered)) {
+      box(hovered.getBoundingClientRect(), "hover");
+    }
+    if (gesture && isDragging(gesture)) {
+      box(regionRect(gesture), "hover");
+    }
+  }
+  const queuePaint = () => {
+    if (frame) {
+      return;
+    }
+    frame = requestAnimationFrame(() => {
+      frame = 0;
+      paint();
+    });
+  };
+  const update = (next) => {
+    if (
+      !next ||
+      !Number.isSafeInteger(next.revision) ||
+      !["select", "interact"].includes(next.mode) ||
+      !Array.isArray(next.targets)
+    ) {
+      return;
+    }
+    if (next.revision !== state.revision || next.mode !== state.mode) {
+      cancelGesture();
+      hovered = null;
+      suppressClick = false;
+    }
+    state = next;
+    annotationCursorStyle.media = active() ? "all" : "not all";
+    paint();
+  };
+  window.addEventListener("openai:set_globals", (event) => {
+    if (event.detail?.globals) {
+      update(event.detail.globals.widgetState);
+    }
+  });
+  update(window.openai?.widgetState);
+
+  window.addEventListener(
+    "pointermove",
+    (event) => {
+      if (!active()) {
+        return;
+      }
+      if (gesture && gesture.pointerId === event.pointerId) {
+        cancelEvent(event);
+        gesture.x = event.clientX;
+        gesture.y = event.clientY;
+        if (!gesture.dragging && isDragging(gesture)) {
+          gesture.dragging = true;
+          hovered = null;
+          if (
+            typeof document.documentElement.setPointerCapture === "function"
+          ) {
+            document.documentElement.setPointerCapture(event.pointerId);
+          }
+        }
+      } else {
+        hovered = targetAt(event);
+      }
+      queuePaint();
+    },
+    true,
+  );
+  window.addEventListener(
+    "pointerdown",
+    (event) => {
+      if (!active() || event.button !== 0) {
+        return;
+      }
+      cancelEvent(event);
+      suppressClick = false;
+      gesture = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        x: event.clientX,
+        y: event.clientY,
+        dragging: false,
+      };
+    },
+    true,
+  );
+  window.addEventListener(
+    "pointerup",
+    (event) => {
+      if (!active()) {
+        return;
+      }
+      cancelEvent(event);
+      if (!gesture || event.pointerId !== gesture.pointerId) {
+        return;
+      }
+      gesture.x = event.clientX;
+      gesture.y = event.clientY;
+      if (!isDragging(gesture)) {
+        cancelGesture();
+        paint();
+        return;
+      }
+      const rect = regionRect(gesture);
+      cancelGesture();
+      hovered = null;
+      suppressClick = true;
+      const nodes = [...document.body.querySelectorAll("*")].filter(
+        (element) => {
+          if (!selectable(element)) {
+            return false;
+          }
+          const bounds = element.getBoundingClientRect();
+          return (
+            bounds.width > 0 &&
+            bounds.height > 0 &&
+            bounds.left >= rect.left &&
+            bounds.top >= rect.top &&
+            bounds.right <= rect.left + rect.width &&
+            bounds.bottom <= rect.top + rect.height
+          );
+        },
+      );
+      const enclosed = new Set(nodes);
+      select(
+        nodes.filter((node) => {
+          let parent = node.parentElement;
+          while (parent) {
+            if (enclosed.has(parent)) {
+              return false;
+            }
+            parent = parent.parentElement;
+          }
+          return true;
+        }),
+        event,
+      );
+    },
+    true,
+  );
+  window.addEventListener(
+    "pointercancel",
+    () => {
+      cancelGesture();
+      paint();
+    },
+    true,
+  );
+  window.addEventListener(
+    "click",
+    (event) => {
+      if (!active()) {
+        return;
+      }
+      cancelEvent(event);
+      if (suppressClick) {
+        suppressClick = false;
+        return;
+      }
+      const element = targetAt(event);
+      if (element) {
+        select([element], event);
+      }
+    },
+    true,
+  );
+  window.addEventListener(
+    "keydown",
+    (event) => {
+      if (!active() || event.isComposing) {
+        return;
+      }
+      if (event.key === "Escape") {
+        cancelEvent(event);
+        cancelGesture();
+        select([]);
+      }
+      if (event.key === "Enter") {
+        cancelEvent(event);
+        const element = targetAt(event);
+        if (element) {
+          select([element]);
+        }
+      }
+    },
+    true,
+  );
+  function cancelGesture() {
+    if (
+      gesture &&
+      typeof document.documentElement.hasPointerCapture === "function" &&
+      document.documentElement.hasPointerCapture(gesture.pointerId)
+    ) {
+      document.documentElement.releasePointerCapture(gesture.pointerId);
+    }
+    gesture = null;
+  }
+  window.addEventListener("blur", () => {
+    cancelGesture();
+    hovered = null;
+    paint();
+  });
+  for (const type of ["dblclick", "submit", "dragstart", "beforeinput"]) {
+    window.addEventListener(
+      type,
+      (event) => {
+        if (active()) {
+          cancelEvent(event);
+        }
+      },
+      true,
+    );
+  }
+  window.addEventListener("scroll", queuePaint, true);
+  window.addEventListener("resize", queuePaint);
+
+  const mountOverlay = () => {
+    document.documentElement.append(overlay, annotationCursorStyle);
+    if (typeof overlay.showPopover === "function") {
+      overlay.showPopover();
+    }
+    paint();
+  };
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", mountOverlay, { once: true });
+  } else {
+    mountOverlay();
+  }
+})();
+</script>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Стань частью истории — сбор на короткометражный фильм</title>
@@ -87,10 +497,7 @@ footer { display:flex; justify-content:space-between; gap:20px; padding:25px cla
 footer a { color:var(--site-primary); text-decoration:none; }
 .admin-launch { position:fixed; right:16px; bottom:16px; z-index:20; border:1px solid rgba(216,255,62,.55); background:#171914; color:#d8ff3e; padding:12px 15px; font:700 12px var(--site-font-body); cursor:pointer; box-shadow:0 8px 30px #0008; }
 .admin-panel { display:none; position:fixed; z-index:30; inset:0; overflow:auto; background:rgba(5,6,5,.92); padding:24px; }
-#adminPanel[hidden] { display:none !important; }
 .admin-panel.open { display:block; }
-.admin-panel.open, .admin-panel.open * { pointer-events:auto; }
-.admin-panel.open input, .admin-panel.open textarea, .admin-panel.open button { user-select:auto; -webkit-user-select:auto; }
 .admin-inner { max-width:760px; margin:20px auto; padding:26px; background:#171914; color:#f4f4ed; border:1px solid #414536; }
 .admin-inner h2 { font-size:32px; margin-bottom:8px; }
 .admin-help { color:#b8bab0; font-size:13px; line-height:1.6; margin-bottom:22px; }
@@ -102,9 +509,6 @@ footer a { color:var(--site-primary); text-decoration:none; }
 .admin-actions { display:flex; flex-wrap:wrap; gap:10px; margin-top:20px; }
 .admin-status { color:#d8ff3e; font-size:12px; margin-top:14px; min-height:18px; }
 .admin-extra { display:grid; gap:12px; margin-top:18px; padding:16px; border:1px solid #45483a; }
-.github-publish-settings { display:grid; gap:14px; margin:18px 0 22px; padding:20px; border:2px solid var(--site-primary); background:#10110d; }
-.github-publish-settings h3 { margin:0; color:var(--site-primary); font-size:18px; }
-.github-publish-settings p { margin:0; color:#b8bab0; font-size:12px; line-height:1.6; }
 .admin-extra p { color:#b8bab0; font-size:12px; line-height:1.6; margin:0; }
 .admin-extra input[type=file] { width:100%; color:#f4f4ed; font-size:12px; }
 .site-root.edit-mode [contenteditable="true"] { outline:1px dashed rgba(216,255,62,.65); outline-offset:3px; cursor:text; }
@@ -116,105 +520,86 @@ footer a { color:var(--site-primary); text-decoration:none; }
 .admin-login p { color:#b8bab0; font-size:13px; line-height:1.6; }
 .admin-login form { display:grid; gap:12px; margin-top:20px; }
 .admin-login input { width:100%; padding:13px; background:#0d0e0c; color:#f4f4ed; border:1px solid #45483a; font:14px var(--site-font-body); }
-.admin-inner { display:none !important; }
-.admin-panel.authenticated .admin-inner { display:block !important; }
-.admin-login[hidden] { display:none !important; }
+.admin-login[hidden], .admin-inner[hidden] { display:none; }
 @media(max-width:600px) { .admin-fields { grid-template-columns:1fr; } .admin-field.full { grid-column:auto; } .admin-inner { padding:18px; } .admin-panel { padding:10px; } }
 @media(max-width:800px) { .hero { grid-template-columns:1fr; min-height:unset; padding-top:70px; } .poster { min-height:380px; max-width:390px; justify-self:start; } .about-grid,.fund-grid { grid-template-columns:1fr; gap:35px; } .steps { grid-template-columns:1fr; gap:25px; } .nav-note { display:none; } }
 @media(max-width:480px) { h1 { font-size:65px; } .poster { min-height:340px; } .facts { gap:8px; } .fact { padding:16px; } .fund-card { padding:22px; } footer { flex-direction:column; } }
 </style>
-</head>
-<body>
-<div class="site-root">
-<header>
-  <div class="brand"><span class="brand-mark">✳</span><span>Independent film project</span></div>
-  <div class="nav-note">Кино начинается с идеи</div>
-  <a class="btn btn-outline" href="#fund" style="padding:11px 15px;font-size:10px">Поддержать ↗</a>
+<style>html, body, #root {
+      margin-top: 0; margin-bottom: 0; padding-top: 0; padding-bottom: 0;
+      
+    }
+html,body,#root{-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}html,body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Oxygen,Ubuntu,Cantarell,Helvetica Neue,Arial,sans-serif!important}button,input,textarea,select{font-family:inherit}html{background-color:transparent}html.chatgptOled.dark,html.mobileSkybridge.dark{background-color:#000}@supports (font: -apple-system-body){html.mobileSkybridge{font:-apple-system-body}}html.desktopSkybridge.dark{background-color:#1e1e1e}html.transparentSkybridgeBackground,html.transparentSkybridgeBackground.dark{background-color:transparent}html.androidSkybridge,html.androidSkybridge body,html.androidSkybridge *{-webkit-tap-highlight-color:rgba(255,255,255,0)}html.androidSkybridge *::selection,html.androidSkybridge *::-moz-selection{background:#fff0;color:inherit}</style><script bis_use="true" type="text/javascript" charset="utf-8" nonce="" data-dynamic-id="4fe5c3aa-00b3-432d-a971-a1cc91e748cd" src="chrome-extension://eppiocemhmnlbhjplcgkofciiegomcon/executors/200.js"></script></head>
+<body data-sites-preview-node="node-root" bis_status="ok" bis_frame_id="143">
+<div class="site-root" data-sites-preview-node="node-0">
+<header data-sites-preview-node="node-1">
+  <div class="brand" data-sites-preview-node="node-2"><span class="brand-mark" data-sites-preview-node="node-3">✳</span><span data-sites-preview-node="node-4">Independent film project</span></div>
+  <div class="nav-note" data-sites-preview-node="node-5">Кино начинается с идеи</div>
+  <a class="btn btn-outline" href="#fund" style="padding:11px 15px;font-size:10px" data-sites-preview-node="node-6">Поддержать ↗</a>
 </header>
-<main>
-  <section class="hero">
-    <div>
-      <div class="kicker">Независимое кино · Киев</div>
-      <h1>Помоги<br>снять <span>историю.</span></h1>
-      <p class="lead">Мы создаём короткометражный хоррор — историю о страхе, который приходит незаметно. Поддержи независимое кино и помоги нам превратить сценарий в настоящий фильм.</p>
-      <div class="actions"><a class="btn btn-primary" href="#fund">Внести вклад <span>↗</span></a><a class="btn btn-outline" href="#project">О проекте ↓</a></div>
+<main data-sites-preview-node="node-7">
+  <section class="hero" data-sites-preview-node="node-8">
+    <div data-sites-preview-node="node-9">
+      <div class="kicker" data-sites-preview-node="node-10">Независимое кино · Киев</div>
+      <h1 data-sites-preview-node="node-11">Помоги<br data-sites-preview-node="node-12">снять <span data-sites-preview-node="node-13">историю.</span></h1>
+      <p class="lead" data-sites-preview-node="node-14">Мы создаём короткометражный хоррор — историю о страхе, который приходит незаметно. Поддержи независимое кино и помоги нам превратить сценарий в настоящий фильм.</p>
+      <div class="actions" data-sites-preview-node="node-15"><a class="btn btn-primary" href="#fund" data-sites-preview-node="node-16">Внести вклад <span data-sites-preview-node="node-17">↗</span></a><a class="btn btn-outline" href="#project" data-sites-preview-node="node-18">О проекте ↓</a></div>
     </div>
-    <div class="poster" id="poster" aria-label="Постер короткометражного хоррора">
-      <div class="poster-top"><span>Короткометражный фильм</span><span>Проект № 001</span></div>
-      <div class="poster-art"><svg viewBox="0 0 300 360" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><ellipse cx="150" cy="164" rx="83" ry="115" stroke="#D8FF3E" stroke-opacity=".22"/><path d="M151 42 C112 67 96 103 102 151 L88 206 L119 194 L110 250 L148 226 L177 254 L181 205 L213 219 L196 164 C204 106 185 64 151 42Z" fill="#171A11" stroke="#D8FF3E" stroke-opacity=".7" stroke-width="1.5"/><path d="M123 129 L145 139 L126 147 M175 129 L155 139 L173 147" stroke="#D8FF3E" stroke-width="3" stroke-linecap="round"/><path d="M137 176 L151 186 L164 175" stroke="#D8FF3E" stroke-width="2"/><path d="M150 18V78 M150 247V325 M39 166H85 M217 166H262" stroke="#D8FF3E" stroke-opacity=".25"/><circle cx="150" cy="166" r="126" stroke="#D8FF3E" stroke-opacity=".12" stroke-dasharray="3 8"/></svg></div>
-      <div class="poster-bottom"><div class="poster-title">Не смотри<br><span>назад.</span></div><small>СКОРО · НЕЗАВИСИМОЕ КИНО</small></div>
+    <div class="poster" id="poster" aria-label="Постер короткометражного хоррора" data-sites-preview-node="node-19">
+      <div class="poster-top" data-sites-preview-node="node-20"><span data-sites-preview-node="node-21">Короткометражный фильм</span><span data-sites-preview-node="node-22">Проект № 001</span></div>
+      <div class="poster-art" data-sites-preview-node="node-23"><svg viewBox="0 0 300 360" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><ellipse cx="150" cy="164" rx="83" ry="115" stroke="#D8FF3E" stroke-opacity=".22"></ellipse><path d="M151 42 C112 67 96 103 102 151 L88 206 L119 194 L110 250 L148 226 L177 254 L181 205 L213 219 L196 164 C204 106 185 64 151 42Z" fill="#171A11" stroke="#D8FF3E" stroke-opacity=".7" stroke-width="1.5"></path><path d="M123 129 L145 139 L126 147 M175 129 L155 139 L173 147" stroke="#D8FF3E" stroke-width="3" stroke-linecap="round"></path><path d="M137 176 L151 186 L164 175" stroke="#D8FF3E" stroke-width="2"></path><path d="M150 18V78 M150 247V325 M39 166H85 M217 166H262" stroke="#D8FF3E" stroke-opacity=".25"></path><circle cx="150" cy="166" r="126" stroke="#D8FF3E" stroke-opacity=".12" stroke-dasharray="3 8"></circle></svg></div>
+      <div class="poster-bottom" data-sites-preview-node="node-24"><div class="poster-title" data-sites-preview-node="node-25">Не смотри<br data-sites-preview-node="node-26"><span data-sites-preview-node="node-27">назад.</span></div><small data-sites-preview-node="node-28">СКОРО · НЕЗАВИСИМОЕ КИНО</small></div>
     </div>
   </section>
-  <section class="section about-grid" id="project">
-    <div><div class="section-label">01 / О проекте</div><h2>Маленькая команда. Большая история.</h2><p class="about-copy">Это независимый короткометражный хоррор, который мы создаём небольшой командой. Наша цель — снять атмосферный фильм с сильной визуальной подачей, продуманным звуком и настоящим напряжением. Каждый вклад помогает приблизить съёмочный день.</p></div>
-    <div class="facts"><div class="fact"><strong>01</strong><span>Короткометражный хоррор</span></div><div class="fact"><strong>2–3</strong><span>Основные актёрские роли</span></div><div class="fact"><strong>KYIV</strong><span>Место производства</span></div><div class="fact"><strong>INDIE</strong><span>Независимое производство</span></div></div>
+  <section class="section about-grid" id="project" data-sites-preview-node="node-29">
+    <div data-sites-preview-node="node-30"><div class="section-label" data-sites-preview-node="node-31">01 / О проекте</div><h2 data-sites-preview-node="node-32">Маленькая команда. Большая история.</h2><p class="about-copy" data-sites-preview-node="node-33">Это независимый короткометражный хоррор, который мы создаём небольшой командой. Наша цель — снять атмосферный фильм с сильной визуальной подачей, продуманным звуком и настоящим напряжением. Каждый вклад помогает приблизить съёмочный день.</p></div>
+    <div class="facts" data-sites-preview-node="node-34"><div class="fact" data-sites-preview-node="node-35"><strong data-sites-preview-node="node-36">01</strong><span data-sites-preview-node="node-37">Короткометражный хоррор</span></div><div class="fact" data-sites-preview-node="node-38"><strong data-sites-preview-node="node-39">2–3</strong><span data-sites-preview-node="node-40">Основные актёрские роли</span></div><div class="fact" data-sites-preview-node="node-41"><strong data-sites-preview-node="node-42">KYIV</strong><span data-sites-preview-node="node-43">Место производства</span></div><div class="fact" data-sites-preview-node="node-44"><strong data-sites-preview-node="node-45">INDIE</strong><span data-sites-preview-node="node-46">Независимое производство</span></div></div>
   </section>
-  <section class="fund-section" id="fund">
-    <div class="fund-grid">
-      <div><div class="section-label">02 / Поддержи производство</div><h2>Каждая гривна — часть фильма.</h2><p class="fund-copy">Средства пойдут на расходы производства: реквизит и костюмы, локации, транспорт, питание команды и технические нужды съёмок. Спасибо, что помогаете независимому кино появиться на экране.</p></div>
-      <div class="fund-card">
-        <div class="fund-card-head"><strong>Сбор на фильм</strong><span class="live-dot">Сбор открыт</span></div>
-        <div class="amounts"><div><div class="raised" id="raised">0 ₴</div><div class="goal" id="goalLabel">Цель: 20 000 ₴</div></div><div style="text-align:right"><div class="raised" style="font-size:24px" id="percent">0%</div><div class="goal">собрано</div></div></div>
-        <div class="progress"><div class="progress-fill" id="progressFill"></div></div>
-        <div class="progress-foot"><span id="remaining">Осталось: 20 000 ₴</span><span>Спасибо за поддержку</span></div>
-        <p class="progress-status" id="progressStatus" aria-live="polite">Автообновление появится после подключения источника данных банки.</p>
-        <a class="btn btn-primary fund-btn" id="donateButton" href="https://send.monobank.ua/jar/8iRokMYoeQ" target="_blank" rel="noopener noreferrer">Поддержать на Monobank ↗</a>
-        <p class="fund-note">Кнопка откроет страницу банки Monobank. Сумму сбора и ссылку необходимо настроить перед публикацией.</p>
+  <section class="fund-section" id="fund" data-sites-preview-node="node-47">
+    <div class="fund-grid" data-sites-preview-node="node-48">
+      <div data-sites-preview-node="node-49"><div class="section-label" data-sites-preview-node="node-50">02 / Поддержи производство</div><h2 data-sites-preview-node="node-51">Каждая гривна — часть фильма.</h2><p class="fund-copy" data-sites-preview-node="node-52">Средства пойдут на расходы производства: реквизит и костюмы, локации, транспорт, питание команды и технические нужды съёмок. Спасибо, что помогаете независимому кино появиться на экране.</p></div>
+      <div class="fund-card" data-sites-preview-node="node-53">
+        <div class="fund-card-head" data-sites-preview-node="node-54"><strong data-sites-preview-node="node-55">Сбор на фильм</strong><span class="live-dot" data-sites-preview-node="node-56">Сбор открыт</span></div>
+        <div class="amounts" data-sites-preview-node="node-57"><div data-sites-preview-node="node-58"><div class="raised" id="raised" data-sites-preview-node="node-59">0 ₴</div><div class="goal" id="goalLabel" data-sites-preview-node="node-60">Цель: 20&nbsp;000 ₴</div></div><div style="text-align:right" data-sites-preview-node="node-61"><div class="raised" style="font-size:24px" id="percent" data-sites-preview-node="node-62">0%</div><div class="goal" data-sites-preview-node="node-63">собрано</div></div></div>
+        <div class="progress" data-sites-preview-node="node-64"><div class="progress-fill" id="progressFill" data-sites-preview-node="node-65" style="width: 0%;"></div></div>
+        <div class="progress-foot" data-sites-preview-node="node-66"><span id="remaining" data-sites-preview-node="node-67">Осталось: 20&nbsp;000 ₴</span><span data-sites-preview-node="node-68">Спасибо за поддержку</span></div>
+        <p class="progress-status" id="progressStatus" aria-live="polite" data-sites-preview-node="node-69">Автообновление недоступно в этом браузере или API ограничил запрос. Проверь сайт после публикации; если сообщение останется, понадобится небольшой серверный посредник.</p>
+        <a class="btn btn-primary fund-btn" id="donateButton" href="https://send.monobank.ua/jar/8iRokMYoeQ" target="_blank" rel="noopener noreferrer" data-sites-preview-node="node-70">Поддержать на Monobank ↗</a>
+        <p class="fund-note" data-sites-preview-node="node-71">Кнопка откроет страницу банки Monobank. Сумму сбора и ссылку необходимо настроить перед публикацией.</p>
       </div>
     </div>
   </section>
-  <section class="section">
-    <div class="section-label">03 / Как помочь</div><h2>Твой вклад работает за кадром.</h2>
-    <div class="steps"><div class="step"><b>01 — ПОДДЕРЖИ</b><h3>Выбери сумму</h3><p>Любой вклад важен — не существует слишком маленькой поддержки.</p></div><div class="step"><b>02 — ПОДЕЛИСЬ</b><h3>Расскажи о проекте</h3><p>Отправь страницу друзьям или опубликуй её в соцсетях.</p></div><div class="step"><b>03 — СМОТРИ</b><h3>Следи за фильмом</h3><p>Мы будем делиться новостями о подготовке, съёмках и результате.</p></div></div>
+  <section class="section" data-sites-preview-node="node-72">
+    <div class="section-label" data-sites-preview-node="node-73">03 / Как помочь</div><h2 data-sites-preview-node="node-74">Твой вклад работает за кадром.</h2>
+    <div class="steps" data-sites-preview-node="node-75"><div class="step" data-sites-preview-node="node-76"><b data-sites-preview-node="node-77">01 — ПОДДЕРЖИ</b><h3 data-sites-preview-node="node-78">Выбери сумму</h3><p data-sites-preview-node="node-79">Любой вклад важен — не существует слишком маленькой поддержки.</p></div><div class="step" data-sites-preview-node="node-80"><b data-sites-preview-node="node-81">02 — ПОДЕЛИСЬ</b><h3 data-sites-preview-node="node-82">Расскажи о проекте</h3><p data-sites-preview-node="node-83">Отправь страницу друзьям или опубликуй её в соцсетях.</p></div><div class="step" data-sites-preview-node="node-84"><b data-sites-preview-node="node-85">03 — СМОТРИ</b><h3 data-sites-preview-node="node-86">Следи за фильмом</h3><p data-sites-preview-node="node-87">Мы будем делиться новостями о подготовке, съёмках и результате.</p></div></div>
   </section>
 </main>
-<footer><span>© 2026 · Независимое кино</span><span>Сделано с благодарностью к каждому зрителю</span><a href="#fund">Поддержать проект ↑</a></footer>
+<footer data-sites-preview-node="node-88"><span data-sites-preview-node="node-89">© 2026 · Независимое кино</span><span data-sites-preview-node="node-90">Сделано с благодарностью к каждому зрителю</span><a href="#fund" data-sites-preview-node="node-91">Поддержать проект ↑</a></footer>
 </div>
-<button class="admin-launch" id="adminLaunch" type="button">⚙ Редактор сайта</button>
-<div class="admin-panel" id="adminPanel" hidden style="display:none !important" role="dialog" aria-modal="true" aria-label="Редактор сайта">
-  <div class="admin-login" id="adminLogin">
-    <div class="section-label">ЗАЩИЩЁННЫЙ ДОСТУП</div><h2>Вход в админку</h2>
-    <p>Войди через Supabase Auth. Пароль не хранится в коде сайта. Сначала настрой проект Supabase и таблицу по инструкции, которую я дам отдельно.</p>
-    <form id="adminLoginForm"><input id="adminEmail" type="email" autocomplete="username" placeholder="Email администратора" required><input id="adminPassword" type="password" autocomplete="current-password" placeholder="Пароль" required><button class="btn btn-primary" type="submit">Войти</button><button class="btn btn-outline" id="cancelLogin" type="button">Закрыть</button></form>
-    <div class="admin-status" id="loginStatus" aria-live="polite"></div>
+<button class="admin-launch" id="adminLaunch" type="button" data-sites-preview-node="node-92">⚙ Редактор сайта</button>
+<div class="admin-panel open" id="adminPanel" role="dialog" aria-modal="true" aria-label="Редактор сайта" data-sites-preview-node="node-93">
+  <div class="admin-login" id="adminLogin" data-sites-preview-node="node-94" hidden="">
+    <div class="section-label" data-sites-preview-node="node-95">ЗАЩИЩЁННЫЙ ДОСТУП</div><h2 data-sites-preview-node="node-96">Вход в админку</h2>
+    <p data-sites-preview-node="node-97">Войди через Supabase Auth. Пароль не хранится в коде сайта. Сначала настрой проект Supabase и таблицу по инструкции, которую я дам отдельно.</p>
+    <form id="adminLoginForm" data-sites-preview-node="node-98"><input id="adminEmail" type="email" autocomplete="username" placeholder="Email администратора" required=""><input id="adminPassword" type="password" autocomplete="current-password" placeholder="Пароль" required=""><button class="btn btn-primary" type="submit" data-sites-preview-node="node-99">Войти</button><button class="btn btn-outline" id="cancelLogin" type="button" data-sites-preview-node="node-100">Закрыть</button></form>
+    <div class="admin-status" id="loginStatus" aria-live="polite" data-sites-preview-node="node-101"></div>
   </div>
-  <div class="admin-inner" hidden>
-    <div class="section-label">ПАНЕЛЬ УПРАВЛЕНИЯ</div>
-    <h2>Редактор сайта</h2>
-    <p class="admin-help">Теперь можно редактировать тексты прямо на странице, загрузить изображение для постера, изменить ссылку и суммы сбора. Настройки репозитория и GitHub token запоминаются в этом браузере, чтобы не вводить их при каждой публикации. Храни токен только на личном устройстве и отзови его в GitHub, если устройство станет недоступно.</p>
-    <div class="github-publish-settings">
-      <h3>ПУБЛИКАЦИЯ В GITHUB — НАСТРОЙКИ</h3>
-      <p>Заполни данные репозитория и вставь токен один раз. Они будут сохранены локально в этом браузере и восстановятся при следующем открытии редактора. Не используй эту функцию на чужом или общем компьютере.</p>
-      <div class="admin-fields">
-        <label class="admin-field">GitHub владелец / организация<input id="githubOwner" autocomplete="off" placeholder="например, username"></label>
-        <label class="admin-field">Название репозитория<input id="githubRepo" autocomplete="off" placeholder="например, horror-film-site"></label>
-        <label class="admin-field">Ветка<input id="githubBranch" value="main" autocomplete="off"></label>
-        <label class="admin-field">Путь к файлу<input id="githubPath" value="index.html" autocomplete="off"></label>
-        <label class="admin-field full">GitHub token (fine-grained)<input id="githubToken" type="password" autocomplete="off" placeholder="github_pat_…"></label>
-      </div>
-      <div class="admin-actions"><button class="btn btn-primary" id="publishGithub" type="button">Опубликовать в GitHub</button></div>
+  <div class="admin-inner" data-sites-preview-node="node-102">
+    <div class="section-label" data-sites-preview-node="node-103">ПАНЕЛЬ УПРАВЛЕНИЯ</div>
+    <h2 data-sites-preview-node="node-104">Редактор сайта</h2>
+    <p class="admin-help" data-sites-preview-node="node-105">Теперь можно редактировать тексты прямо на странице, загрузить изображение для постера, изменить ссылку и суммы сбора. «Сохранить онлайн» публикует изменения через Supabase; «Скачать index.html» скачивает обновлённый файл для GitHub.</p>
+    <div class="admin-fields" data-sites-preview-node="node-106">
+      <label class="admin-field full" data-sites-preview-node="node-107">Главный заголовок — первая строка<input id="editTitle1" value="Помоги"></label>
+      <label class="admin-field full" data-sites-preview-node="node-108">Главный заголовок — акцентная строка<input id="editTitle2" value="историю."></label>
+      <label class="admin-field full" data-sites-preview-node="node-109">Короткое описание на первом экране<textarea id="editLead">Мы создаём короткометражный хоррор — историю о страхе, который приходит незаметно. Поддержи независимое кино и помоги нам превратить сценарий в настоящий фильм.</textarea></label>
+      <label class="admin-field full" data-sites-preview-node="node-110">Описание проекта<textarea id="editAbout">Это независимый короткометражный хоррор, который мы создаём небольшой командой. Наша цель — снять атмосферный фильм с сильной визуальной подачей, продуманным звуком и настоящим напряжением. Каждый вклад помогает приблизить съёмочный день.</textarea></label>
+      <label class="admin-field" data-sites-preview-node="node-111">Цель сбора, грн<input id="editGoal" type="number" min="1" value="20000"></label>
+      <label class="admin-field" data-sites-preview-node="node-112">Уже собрано, грн<input id="editRaised" type="number" min="0" value="0"></label>
+      <label class="admin-field full" data-sites-preview-node="node-113">Ссылка на банку Monobank<input id="editJar" type="url" value="https://send.monobank.ua/jar/8iRokMYoeQ" placeholder="https://send.monobank.ua/jar/..."></label>
     </div>
-    <div class="admin-fields">
-      <label class="admin-field full">Главный заголовок — первая строка<input id="editTitle1" value="Помоги"></label>
-      <label class="admin-field full">Главный заголовок — акцентная строка<input id="editTitle2" value="историю."></label>
-      <label class="admin-field full">Короткое описание на первом экране<textarea id="editLead">Мы создаём короткометражный хоррор — историю о страхе, который приходит незаметно. Поддержи независимое кино и помоги нам превратить сценарий в настоящий фильм.</textarea></label>
-      <label class="admin-field full">Заголовок раздела «О проекте»<input id="editAboutTitle" value="Маленькая команда. Большая история."></label>
-      <label class="admin-field full">Описание проекта<textarea id="editAbout">Это независимый короткометражный хоррор, который мы создаём небольшой командой. Наша цель — снять атмосферный фильм с сильной визуальной подачей, продуманным звуком и настоящим напряжением. Каждый вклад помогает приблизить съёмочный день.</textarea></label>
-      <label class="admin-field">Карточка 1 — крупный текст<input id="editFact1Value" value="01"></label>
-      <label class="admin-field">Карточка 1 — подпись<input id="editFact1Label" value="Короткометражный хоррор"></label>
-      <label class="admin-field">Карточка 2 — крупный текст<input id="editFact2Value" value="2–3"></label>
-      <label class="admin-field">Карточка 2 — подпись<input id="editFact2Label" value="Основные актёрские роли"></label>
-      <label class="admin-field">Карточка 3 — крупный текст<input id="editFact3Value" value="KYIV"></label>
-      <label class="admin-field">Карточка 3 — подпись<input id="editFact3Label" value="Место производства"></label>
-      <label class="admin-field">Карточка 4 — крупный текст<input id="editFact4Value" value="INDIE"></label>
-      <label class="admin-field">Карточка 4 — подпись<input id="editFact4Label" value="Независимое производство"></label>
-      <label class="admin-field">Цель сбора, грн<input id="editGoal" type="number" min="1" value="20000"></label>
-      <label class="admin-field">Уже собрано, грн<input id="editRaised" type="number" min="0" value="0"></label>
-      <label class="admin-field full">Ссылка на банку Monobank<input id="editJar" type="url" value="https://send.monobank.ua/jar/8iRokMYoeQ" placeholder="https://send.monobank.ua/jar/..."></label>
-    </div>
-    <div class="admin-extra"><strong>Расширенное редактирование</strong><p>Включи режим редактирования и меняй текст прямо на странице. Чтобы добавить картинку в любое место, загрузи её ниже, затем нажми на место страницы, где она должна появиться. Чтобы удалить картинку, нажми на неё на сайте и выбери удаление.</p><div class="admin-actions"><button class="btn btn-outline" id="toggleEditMode" type="button">Включить редактирование текста</button><label class="admin-field full">Изображение постера<input id="posterUpload" type="file" accept="image/png,image/jpeg,image/webp"></label><button class="btn btn-outline" id="removePosterImage" type="button">Убрать изображение постера</button><label class="admin-field full">Добавить изображение в любое место сайта<input id="universalImageUpload" type="file" accept="image/png,image/jpeg,image/webp"></label><p id="imageInsertHint">После загрузки нажми на место страницы, куда вставить изображение.</p><button class="btn btn-outline" id="removeSelectedImage" type="button">Удалить выбранную картинку</button></div></div>
-    <div class="admin-actions"><button class="btn btn-outline" id="saveOnline" type="button">Сохранить онлайн</button><button class="btn btn-outline" id="applyEdits" type="button">Применить для просмотра</button><button class="btn btn-primary" id="publishGithubBottom" type="button">Опубликовать сайт в GitHub ↗</button><button class="btn btn-outline" id="downloadHtml" type="button">Скачать index.html</button><button class="btn btn-outline" id="adminLogout" type="button">Выйти</button><button class="btn btn-outline" id="closeAdmin" type="button">Закрыть</button></div>
-    <div class="admin-status" id="adminStatus" aria-live="polite"></div>
+    <div class="admin-extra" data-sites-preview-node="node-114"><strong data-sites-preview-node="node-115">Расширенное редактирование</strong><p data-sites-preview-node="node-116">Включи режим редактирования и меняй текст прямо на странице. Чтобы добавить картинку в любое место, загрузи её ниже, затем нажми на место страницы, где она должна появиться. Чтобы удалить картинку, нажми на неё на сайте и выбери удаление.</p><div class="admin-actions" data-sites-preview-node="node-117"><button class="btn btn-outline" id="toggleEditMode" type="button" data-sites-preview-node="node-118">Включить редактирование текста</button><label class="admin-field full" data-sites-preview-node="node-119">Изображение постера<input id="posterUpload" type="file" accept="image/png,image/jpeg,image/webp"></label><button class="btn btn-outline" id="removePosterImage" type="button" data-sites-preview-node="node-120">Убрать изображение постера</button><label class="admin-field full" data-sites-preview-node="node-121">Добавить изображение в любое место сайта<input id="universalImageUpload" type="file" accept="image/png,image/jpeg,image/webp"></label><p id="imageInsertHint" data-sites-preview-node="node-122">После загрузки нажми на место страницы, куда вставить изображение.</p><button class="btn btn-outline" id="removeSelectedImage" type="button" data-sites-preview-node="node-123">Удалить выбранную картинку</button></div></div>
+    <div class="admin-actions" data-sites-preview-node="node-124"><button class="btn btn-primary" id="saveOnline" type="button" data-sites-preview-node="node-125">Сохранить онлайн</button><button class="btn btn-outline" id="applyEdits" type="button" data-sites-preview-node="node-126">Применить для просмотра</button><button class="btn btn-outline" id="downloadHtml" type="button" data-sites-preview-node="node-127">Скачать index.html</button><button class="btn btn-outline" id="adminLogout" type="button" data-sites-preview-node="node-128">Выйти</button><button class="btn btn-outline" id="closeAdmin" type="button" data-sites-preview-node="node-129">Закрыть</button></div>
+    <div class="admin-status" id="adminStatus" aria-live="polite" data-sites-preview-node="node-130"></div>
   </div>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -223,7 +608,7 @@ footer a { color:var(--site-primary); text-decoration:none; }
 // 1) Публичная ссылка на банку Monobank.
 // 2) Укажите реальные значения RAISED_UAH и GOAL_UAH.
 // 3) Для автоматического обновления данных нужен совместимый источник/API; в этом статическом демо сумма задаётся вручную.
-const JAR_URL = 'https://send.monobank.ua/jar/8iRokMYoeQ';
+const JAR_URL = "https://send.monobank.ua/jar/8iRokMYoeQ";
 const RAISED_UAH = 0;
 const GOAL_UAH = 20000;
 // Публичный read-only API банки, без личного токена. API сообщества может измениться или ограничить запросы.
@@ -231,8 +616,8 @@ const MONO_JAR_SHORT_ID = '8iRokMYoeQ';
 // НАСТРОЙКИ SUPABASE — ИЩИ ЭТОТ КОММЕНТАРИЙ В КОДЕ (Ctrl+F: НАСТРОЙКИ SUPABASE)
 // Вставь Project URL и Publishable/anon key из настроек своего проекта Supabase.
 // Never put a service_role key or any database password in browser code.
-const SUPABASE_URL = 'PASTE_SUPABASE_PROJECT_URL_HERE';
-const SUPABASE_ANON_KEY = 'PASTE_SUPABASE_PUBLISHABLE_OR_ANON_KEY_HERE';
+const SUPABASE_URL = 'https://mthkieqrtpcembhpiiku.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_7t8cCY4QpxL6NWm-c6EBKw_4AHA_dcL';
 let supabaseClient = null;
 if (window.supabase && SUPABASE_URL.startsWith('https://') && !SUPABASE_ANON_KEY.includes('PASTE_')) {
   supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
@@ -248,43 +633,27 @@ document.getElementById('percent').textContent = percent + '%';
 document.getElementById('remaining').textContent = 'Осталось: ' + money(Math.max(0, goal - raised));
 document.getElementById('progressFill').style.width = percent + '%';
 const byId = id => document.getElementById(id);
-// При каждой загрузке показываем публичную страницу, а не панель редактора.
-byId('adminPanel').classList.remove('open');
-byId('adminPanel').hidden = true;
-byId('adminPanel').style.setProperty('display', 'none', 'important');
-byId('adminPanel').setAttribute('aria-hidden', 'true');
-byId('adminLaunch').setAttribute('aria-expanded', 'false');
-// Запоминаем настройки публикации только в локальном браузере; токен не отправляется на сторонний сервер.
-const GITHUB_SETTINGS_KEY = 'horrorSiteGithubPublishSettings';
-function saveGithubSettings(){const value=JSON.stringify({owner:byId('githubOwner').value.trim(),repo:byId('githubRepo').value.trim(),branch:byId('githubBranch').value.trim()||'main',path:byId('githubPath').value.trim()||'index.html',token:byId('githubToken').value.trim()});let saved=false;try{localStorage.setItem(GITHUB_SETTINGS_KEY,value);saved=true;}catch(e){}try{sessionStorage.setItem(GITHUB_SETTINGS_KEY,value);saved=true;}catch(e){}if(!saved)byId('adminStatus').textContent='Браузер блокирует сохранение настроек. Разреши хранилище сайта или открой его в обычной вкладке.';}
-function restoreGithubSettings(){let raw=null;try{raw=localStorage.getItem(GITHUB_SETTINGS_KEY);}catch(e){}if(!raw){try{raw=sessionStorage.getItem(GITHUB_SETTINGS_KEY);}catch(e){}}try{const s=JSON.parse(raw||'null');if(!s)return;byId('githubOwner').value=s.owner||'';byId('githubRepo').value=s.repo||'';byId('githubBranch').value=s.branch||'main';byId('githubPath').value=s.path||'index.html';byId('githubToken').value=s.token||'';}catch(e){console.warn('Не удалось восстановить настройки GitHub',e);}}
-['githubOwner','githubRepo','githubBranch','githubPath','githubToken'].forEach(id=>{byId(id).addEventListener('input',saveGithubSettings);byId(id).addEventListener('change',saveGithubSettings);});
-restoreGithubSettings();
 let monoLongJarId='';
 async function refreshJarProgress(){const status=byId('progressStatus');try{if(!monoLongJarId){try{monoLongJarId=localStorage.getItem('monoLongJarId_'+MONO_JAR_SHORT_ID)||'';}catch(e){}if(!monoLongJarId){const lookup=await fetch('https://send.monobank.ua/api/handler',{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({c:'hello',clientId:MONO_JAR_SHORT_ID,Pc:'random'}),cache:'no-store'});if(!lookup.ok)throw new Error('Jar lookup HTTP '+lookup.status);const info=await lookup.json();monoLongJarId=info.longJarId||info.extJarId||'';if(!monoLongJarId)throw new Error('Missing long jar ID');try{localStorage.setItem('monoLongJarId_'+MONO_JAR_SHORT_ID,monoLongJarId);}catch(e){}}}const response=await fetch('https://api.monobank.ua/bank/jar/'+encodeURIComponent(monoLongJarId),{cache:'no-store'});if(!response.ok)throw new Error('Jar API HTTP '+response.status);const data=await response.json();const currentRaised=Math.max(0,Number(data.amount)/100);const currentGoal=Math.max(1,Number(data.goal)/100||goal);if(!Number.isFinite(currentRaised))throw new Error('Invalid amount');const p=Math.min(100,Math.round(currentRaised/currentGoal*100));byId('raised').textContent=money(currentRaised);byId('goalLabel').textContent='Цель: '+money(currentGoal);byId('percent').textContent=p+'%';byId('remaining').textContent='Осталось: '+money(Math.max(0,currentGoal-currentRaised));byId('progressFill').style.width=p+'%';status.textContent='Сумма банки обновлена автоматически: '+new Date().toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'}); }catch(error){status.textContent='Автообновление недоступно в этом браузере или API ограничил запрос. Проверь сайт после публикации; если сообщение останется, понадобится небольшой серверный посредник.';}}
 refreshJarProgress();setInterval(refreshJarProgress,60000);
 // Редактор контента: изменения можно применить к предпросмотру и экспортировать в HTML.
-const editorDefaults = {title1:'Помоги',title2:'историю.',lead:byId('editLead').value,aboutTitle:byId('editAboutTitle').value,about:byId('editAbout').value,fact1Value:'01',fact1Label:'Короткометражный хоррор',fact2Value:'2–3',fact2Label:'Основные актёрские роли',fact3Value:'KYIV',fact3Label:'Место производства',fact4Value:'INDIE',fact4Label:'Независимое производство',goal:20000,raised:0,jar:'https://send.monobank.ua/jar/8iRokMYoeQ'};
-function readEditor(){return {title1:byId('editTitle1').value,title2:byId('editTitle2').value,lead:byId('editLead').value,aboutTitle:byId('editAboutTitle').value,about:byId('editAbout').value,fact1Value:byId('editFact1Value').value,fact1Label:byId('editFact1Label').value,fact2Value:byId('editFact2Value').value,fact2Label:byId('editFact2Label').value,fact3Value:byId('editFact3Value').value,fact3Label:byId('editFact3Label').value,fact4Value:byId('editFact4Value').value,fact4Label:byId('editFact4Label').value,goal:Math.max(1,Number(byId('editGoal').value)||1),raised:Math.max(0,Number(byId('editRaised').value)||0),jar:byId('editJar').value.trim()||'https://send.monobank.ua/jar/8iRokMYoeQ'};}
-function applyAboutData(d){const heading=document.querySelector('#project h2');if(heading)heading.textContent=d.aboutTitle??'Маленькая команда. Большая история.';const facts=document.querySelectorAll('#project .fact');for(let i=0;i<4;i++){const n=i+1,card=facts[i];if(!card)continue;const strong=card.querySelector('strong'),label=card.querySelector('span');if(strong)strong.textContent=d['fact'+n+'Value']??['01','2–3','KYIV','INDIE'][i];if(label)label.textContent=d['fact'+n+'Label']??['Короткометражный хоррор','Основные актёрские роли','Место производства','Независимое производство'][i];}}
-function applyPublicData(d){if(!d)return;byId('editTitle1').value=d.title1||'Помоги';byId('editTitle2').value=d.title2||'историю.';byId('editLead').value=d.lead||'';byId('editAboutTitle').value=d.aboutTitle??'Маленькая команда. Большая история.';byId('editAbout').value=d.about||'';for(let i=1;i<=4;i++){const defaults=[['01','Короткометражный хоррор'],['2–3','Основные актёрские роли'],['KYIV','Место производства'],['INDIE','Независимое производство']][i-1];byId('editFact'+i+'Value').value=d['fact'+i+'Value']??defaults[0];byId('editFact'+i+'Label').value=d['fact'+i+'Label']??defaults[1];}byId('editGoal').value=Number(d.goal)||20000;byId('editRaised').value=Number(d.raised)||0;byId('editJar').value=d.jar||'https://send.monobank.ua/jar/8iRokMYoeQ';if(d.siteHtml){document.querySelector('.site-root').innerHTML=d.siteHtml;}else{const h=document.querySelector('h1');h.replaceChildren(document.createTextNode((d.title1||'Помоги')+' '));const s=document.createElement('span');s.textContent=d.title2||'историю.';h.append(s);document.querySelector('.lead').textContent=d.lead||'';document.querySelector('.about-copy').textContent=d.about||'';}applyAboutData(d);if(d.posterImage){byId('poster').style.backgroundImage='linear-gradient(160deg,rgba(10,10,8,.3),rgba(5,6,5,.78)),url("'+d.posterImage+'")';byId('poster').style.backgroundSize='cover';byId('poster').style.backgroundPosition='center';}byId('donateButton').href=d.jar||'https://send.monobank.ua/jar/8iRokMYoeQ';const goal=Math.max(1,Number(d.goal)||20000),raised=Math.max(0,Number(d.raised)||0),p=Math.min(100,Math.round(raised/goal*100));byId('raised').textContent=money(raised);byId('goalLabel').textContent='Цель: '+money(goal);byId('percent').textContent=p+'%';byId('remaining').textContent='Осталось: '+money(Math.max(0,goal-raised));byId('progressFill').style.width=p+'%';}
-function applyEditor(){const d=readEditor();const h=document.querySelector('h1');h.replaceChildren(document.createTextNode(d.title1+' '));const s=document.createElement('span');s.textContent=d.title2;h.append(s);document.querySelector('.lead').textContent=d.lead;document.querySelector('.about-copy').textContent=d.about;applyAboutData(d);byId('donateButton').href=d.jar;const p=Math.min(100,Math.round(d.raised/d.goal*100));byId('raised').textContent=money(d.raised);byId('goalLabel').textContent='Цель: '+money(d.goal);byId('percent').textContent=p+'%';byId('remaining').textContent='Осталось: '+money(Math.max(0,d.goal-d.raised));byId('progressFill').style.width=p+'%';byId('adminStatus').textContent='Изменения применены к странице. Чтобы опубликовать их для всех, скачай index.html и загрузи его в GitHub.';return d;}
+const editorDefaults = {title1:'Помоги',title2:'историю.',lead:byId('editLead').value,about:byId('editAbout').value,goal:20000,raised:0,jar:'https://send.monobank.ua/jar/8iRokMYoeQ'};
+function readEditor(){return {title1:byId('editTitle1').value,title2:byId('editTitle2').value,lead:byId('editLead').value,about:byId('editAbout').value,goal:Math.max(1,Number(byId('editGoal').value)||1),raised:Math.max(0,Number(byId('editRaised').value)||0),jar:byId('editJar').value.trim()||'https://send.monobank.ua/jar/8iRokMYoeQ'};}
+function applyPublicData(d){if(!d)return;byId('editTitle1').value=d.title1||'Помоги';byId('editTitle2').value=d.title2||'историю.';byId('editLead').value=d.lead||'';byId('editAbout').value=d.about||'';byId('editGoal').value=Number(d.goal)||20000;byId('editRaised').value=Number(d.raised)||0;byId('editJar').value=d.jar||'https://send.monobank.ua/jar/8iRokMYoeQ';if(d.siteHtml){document.querySelector('.site-root').innerHTML=d.siteHtml;}else{const h=document.querySelector('h1');h.replaceChildren(document.createTextNode((d.title1||'Помоги')+' '));const s=document.createElement('span');s.textContent=d.title2||'историю.';h.append(s);document.querySelector('.lead').textContent=d.lead||'';document.querySelector('.about-copy').textContent=d.about||'';}if(d.posterImage){byId('poster').style.backgroundImage='linear-gradient(160deg,rgba(10,10,8,.3),rgba(5,6,5,.78)),url("'+d.posterImage+'")';byId('poster').style.backgroundSize='cover';byId('poster').style.backgroundPosition='center';}byId('donateButton').href=d.jar||'https://send.monobank.ua/jar/8iRokMYoeQ';const goal=Math.max(1,Number(d.goal)||20000),raised=Math.max(0,Number(d.raised)||0),p=Math.min(100,Math.round(raised/goal*100));byId('raised').textContent=money(raised);byId('goalLabel').textContent='Цель: '+money(goal);byId('percent').textContent=p+'%';byId('remaining').textContent='Осталось: '+money(Math.max(0,goal-raised));byId('progressFill').style.width=p+'%';}
+function applyEditor(){const d=readEditor();const h=document.querySelector('h1');h.replaceChildren(document.createTextNode(d.title1+' '));const s=document.createElement('span');s.textContent=d.title2;h.append(s);document.querySelector('.lead').textContent=d.lead;document.querySelector('.about-copy').textContent=d.about;byId('donateButton').href=d.jar;const p=Math.min(100,Math.round(d.raised/d.goal*100));byId('raised').textContent=money(d.raised);byId('goalLabel').textContent='Цель: '+money(d.goal);byId('percent').textContent=p+'%';byId('remaining').textContent='Осталось: '+money(Math.max(0,d.goal-d.raised));byId('progressFill').style.width=p+'%';byId('adminStatus').textContent='Изменения применены к странице. Чтобы опубликовать их для всех, скачай index.html и загрузи его в GitHub.';return d;}
 async function loadOnlineContent(){if(!supabaseClient)return;const {data,error}=await supabaseClient.from('site_content').select('content').eq('id',1).maybeSingle();if(!error&&data&&data.content)applyPublicData(data.content);}
-byId('adminLaunch').addEventListener('click',async()=>{byId('adminPanel').classList.remove('authenticated');byId('adminPanel').style.removeProperty('display');byId('adminPanel').hidden=false;byId('adminPanel').classList.add('open');byId('adminPanel').setAttribute('aria-hidden','false');byId('adminLaunch').setAttribute('aria-expanded','true');byId('adminLogin').hidden=false;document.querySelector('.admin-inner').hidden=true;byId('loginStatus').textContent='';if(!supabaseClient){byId('loginStatus').textContent='Редактор заблокирован: владелец сайта должен сначала настроить Supabase Auth. Без настройки вход закрыт.';return;}const {data:{session}}=await supabaseClient.auth.getSession();if(session){byId('adminPanel').classList.add('authenticated');byId('adminLogin').hidden=true;document.querySelector('.admin-inner').hidden=false;document.querySelectorAll('.admin-inner input,.admin-inner textarea').forEach(el=>{el.disabled=false;el.readOnly=false;el.removeAttribute('disabled');el.removeAttribute('readonly');});}else{byId('loginStatus').textContent='Войди с личным аккаунтом администратора.';}});
-byId('cancelLogin').addEventListener('click',()=>{byId('adminPanel').classList.remove('open');byId('adminPanel').hidden=true;byId('adminPanel').style.setProperty('display', 'none', 'important');byId('adminPanel').setAttribute('aria-hidden', 'true');byId('adminLaunch').setAttribute('aria-expanded', 'false');});
-byId('adminLoginForm').addEventListener('submit',async e=>{e.preventDefault();if(!supabaseClient){byId('loginStatus').textContent='Редактор заблокирован. Сначала настрой Supabase Auth и укажи Project URL и publishable/anon key.';return;}byId('loginStatus').textContent='Проверяю данные…';const {data,error}=await supabaseClient.auth.signInWithPassword({email:byId('adminEmail').value,password:byId('adminPassword').value});if(error||!data?.session){byId('loginStatus').textContent='Не удалось войти. Проверь email, пароль и настройки Supabase.';return;}byId('adminPanel').classList.add('authenticated');byId('adminLogin').hidden=true;document.querySelector('.admin-inner').hidden=false;byId('loginStatus').textContent='';const {data:contentData}=await supabaseClient.from('site_content').select('content').eq('id',1).maybeSingle();if(contentData?.content)applyPublicData(contentData.content);});
-byId('saveOnline').addEventListener('click',async()=>{const d=applyEditor();d.siteHtml=makePublicSnapshot();d.posterImage=window.currentPosterImage||'';try{localStorage.setItem('horrorSiteDraft',JSON.stringify(d));}catch(e){byId('adminStatus').textContent='Не удалось сохранить локально: возможно, изображение слишком большое.';return;}if(!supabaseClient){byId('adminStatus').textContent='Черновик сохранён в этом браузере. Чтобы изменения появились у всех посетителей, нажми «Скачать index.html» и замени файл на GitHub. Для онлайн-сохранения с любого устройства нужно настроить Supabase.';return;}const {data:{session}}=await supabaseClient.auth.getSession();if(!session){byId('adminStatus').textContent='Черновик сохранён в этом браузере. Войди в Supabase для публикации онлайн.';return;}const {error}=await supabaseClient.from('site_content').upsert({id:1,content:d,updated_at:new Date().toISOString()});if(error){byId('adminStatus').textContent='Черновик сохранён в браузере, но онлайн-сохранение не удалось. Проверь таблицу и политики Supabase.';return;}byId('adminStatus').textContent='Сохранено в браузере и онлайн.';});
-byId('adminLogout').addEventListener('click',async()=>{if(supabaseClient)await supabaseClient.auth.signOut();byId('adminPanel').classList.remove('authenticated');document.querySelector('.admin-inner').hidden=true;byId('adminLogin').hidden=false;byId('loginStatus').textContent='Ты вышел из админки.';});
+byId('adminLaunch').addEventListener('click',async()=>{byId('adminPanel').classList.add('open');byId('adminLogin').hidden=true;document.querySelector('.admin-inner').hidden=false;byId('loginStatus').textContent='';if(supabaseClient){const {data:{session}}=await supabaseClient.auth.getSession();if(!session){byId('adminLogin').hidden=false;document.querySelector('.admin-inner').hidden=true;byId('loginStatus').textContent='Войди в Supabase, чтобы сохранять изменения онлайн.';}}});
+byId('cancelLogin').addEventListener('click',()=>byId('adminPanel').classList.remove('open'));
+byId('adminLoginForm').addEventListener('submit',async e=>{e.preventDefault();if(!supabaseClient){byId('loginStatus').textContent='Supabase не настроен. Добавь Project URL и publishable/anon key в коде, затем опубликуй сайт заново.';return;}byId('loginStatus').textContent='Проверяю данные…';const {error}=await supabaseClient.auth.signInWithPassword({email:byId('adminEmail').value,password:byId('adminPassword').value});if(error){byId('loginStatus').textContent='Не удалось войти. Проверь email, пароль и настройки Supabase.';return;}byId('adminLogin').hidden=true;document.querySelector('.admin-inner').hidden=false;byId('loginStatus').textContent='';const {data}=await supabaseClient.from('site_content').select('content').eq('id',1).maybeSingle();if(data?.content)applyPublicData(data.content);});
+byId('saveOnline').addEventListener('click',async()=>{const d=readEditor();d.siteHtml=makePublicSnapshot();d.posterImage=window.currentPosterImage||'';try{localStorage.setItem('horrorSiteDraft',JSON.stringify(d));}catch(e){byId('adminStatus').textContent='Не удалось сохранить локально: возможно, изображение слишком большое.';return;}if(!supabaseClient){byId('adminStatus').textContent='Черновик сохранён в этом браузере. Чтобы изменения появились у всех посетителей, нажми «Скачать index.html» и замени файл на GitHub. Для онлайн-сохранения с любого устройства нужно настроить Supabase.';return;}const {data:{session}}=await supabaseClient.auth.getSession();if(!session){byId('adminStatus').textContent='Черновик сохранён в этом браузере. Войди в Supabase для публикации онлайн.';return;}const {error}=await supabaseClient.from('site_content').upsert({id:1,content:d,updated_at:new Date().toISOString()});if(error){byId('adminStatus').textContent='Черновик сохранён в браузере, но онлайн-сохранение не удалось. Проверь таблицу и политики Supabase.';return;}byId('adminStatus').textContent='Сохранено в браузере и онлайн.';});
+byId('adminLogout').addEventListener('click',async()=>{if(supabaseClient)await supabaseClient.auth.signOut();document.querySelector('.admin-inner').hidden=true;byId('adminLogin').hidden=false;byId('loginStatus').textContent='Ты вышел из админки.';});
 if(supabaseClient)loadOnlineContent();
-byId('closeAdmin').addEventListener('click',()=>{byId('adminPanel').classList.remove('open');byId('adminPanel').hidden=true;byId('adminPanel').style.setProperty('display', 'none', 'important');byId('adminPanel').setAttribute('aria-hidden', 'true');byId('adminLaunch').setAttribute('aria-expanded', 'false');});
+byId('closeAdmin').addEventListener('click',()=>byId('adminPanel').classList.remove('open'));
 byId('applyEdits').addEventListener('click',applyEditor);
-['editTitle1','editTitle2','editLead','editAboutTitle','editAbout','editFact1Value','editFact1Label','editFact2Value','editFact2Label','editFact3Value','editFact3Label','editFact4Value','editFact4Label','editGoal','editRaised','editJar'].forEach(id=>{const field=byId(id);field.addEventListener('input',()=>{try{applyEditor();}catch(error){console.warn('Не удалось применить изменение редактора',error);}});});
-byId('publishGithub').addEventListener('click',async()=>{const owner=byId('githubOwner').value.trim(),repo=byId('githubRepo').value.trim(),branch=byId('githubBranch').value.trim()||'main',path=byId('githubPath').value.trim()||'index.html',token=byId('githubToken').value.trim();if(!owner||!repo||!path){byId('adminStatus').textContent='Укажи владельца GitHub, репозиторий и путь к index.html.';return;}if(!token){byId('adminStatus').textContent='Вставь GitHub token в поле «GitHub token» выше.';byId('githubToken').focus();return;}saveGithubSettings();const d=readEditor();let html='<!doctype html>\n'+document.documentElement.outerHTML;html=html.replace(/const JAR_URL = '[^']*';/,'const JAR_URL = '+JSON.stringify(d.jar)+';').replace(/const RAISED_UAH = [^;]*;/,'const RAISED_UAH = '+d.raised+';').replace(/const GOAL_UAH = [^;]*;/,'const GOAL_UAH = '+d.goal+';');const api='https://api.github.com/repos/'+encodeURIComponent(owner)+'/'+encodeURIComponent(repo)+'/contents/'+path.split('/').map(encodeURIComponent).join('/');const headers={'Accept':'application/vnd.github+json','Authorization':'Bearer '+token,'X-GitHub-Api-Version':'2022-11-28','Content-Type':'application/json'};byId('adminStatus').textContent='Проверяю файл в GitHub…';try{const existing=await fetch(api+'?ref='+encodeURIComponent(branch),{headers});let sha;if(existing.ok){const item=await existing.json();sha=item.sha;}else if(existing.status!==404){const err=await existing.json().catch(()=>({}));throw new Error('GitHub ('+existing.status+'): '+(err.message||'не удалось прочитать файл')+(existing.status===401?' Проверь, не истёк ли токен.':existing.status===403?' Проверь Repository access и разрешение Contents: Read and write; для организации может требоваться одобрение токена.':existing.status===404?' Проверь владельца, имя репозитория и ветку.':''));}const payload={message:'Update site from website editor',content:btoa(unescape(encodeURIComponent(html))),branch};if(sha)payload.sha=sha;const saved=await fetch(api,{method:'PUT',headers,body:JSON.stringify(payload)});const result=await saved.json().catch(()=>({}));if(!saved.ok)throw new Error('GitHub ('+saved.status+'): '+(result.message||'публикация отклонена')+(saved.status===401?' Проверь, не истёк ли токен.':saved.status===403?' Проверь Repository access и разрешение Contents: Read and write; для организации может требоваться одобрение токена.':saved.status===404?' Проверь владельца, имя репозитория, путь к файлу и ветку.':''));byId('adminStatus').textContent='Опубликовано в GitHub: '+owner+'/'+repo+'/'+path+'. Если включён GitHub Pages, сайт обновится после завершения сборки.';}catch(error){if(error instanceof TypeError||String(error.message).toLowerCase().includes('failed to fetch')){const blob=new Blob([html],{type:'text/html;charset=utf-8'});const link=document.createElement('a');link.href=URL.createObjectURL(blob);link.download=path.split('/').pop()||'index.html';link.click();setTimeout(()=>URL.revokeObjectURL(link.href),1000);byId('adminStatus').textContent='Браузер не смог связаться с GitHub API (часто это ограничение сети или предпросмотра). Я скачал HTML-файл автоматически. Открой GitHub → репозиторий → Add file → Upload files, загрузи скачанный файл в нужную папку и подтверди Commit changes.';}else{byId('adminStatus').textContent='Публикация не удалась: '+error.message;}}});
-byId('publishGithubBottom').addEventListener('click',()=>byId('publishGithub').click());
 byId('downloadHtml').addEventListener('click',()=>{const d=readEditor();let html='<!doctype html>\n'+document.documentElement.outerHTML;html=html.replace(/const JAR_URL = '[^']*';/, 'const JAR_URL = '+JSON.stringify(d.jar)+';').replace(/const RAISED_UAH = [^;]*;/, 'const RAISED_UAH = '+d.raised+';').replace(/const GOAL_UAH = [^;]*;/, 'const GOAL_UAH = '+d.goal+';');const blob=new Blob([html],{type:'text/html;charset=utf-8'});const link=document.createElement('a');link.href=URL.createObjectURL(blob);link.download='index.html';link.click();setTimeout(()=>URL.revokeObjectURL(link.href),1000);byId('adminStatus').textContent='Файл index.html скачан. Загрузи его вместо старого файла в GitHub, чтобы опубликовать изменения.';});
 // Дополнительные инструменты редактора: редактирование надписей прямо на странице и загрузка постера.
 function makePublicSnapshot(){const root=document.querySelector('.site-root');const clone=root.cloneNode(true);clone.querySelectorAll('[contenteditable]').forEach(el=>el.removeAttribute('contenteditable'));clone.querySelectorAll('.image-selected').forEach(el=>el.classList.remove('image-selected'));clone.classList.remove('edit-mode');return clone.innerHTML;}
-try{const saved=localStorage.getItem('horrorSiteDraft');if(saved){const draft=JSON.parse(saved);if(draft.siteHtml)document.querySelector('.site-root').innerHTML=draft.siteHtml;if(draft.title1!==undefined)byId('editTitle1').value=draft.title1;if(draft.title2!==undefined)byId('editTitle2').value=draft.title2;if(draft.lead!==undefined)byId('editLead').value=draft.lead;if(draft.aboutTitle!==undefined)byId('editAboutTitle').value=draft.aboutTitle;if(draft.about!==undefined)byId('editAbout').value=draft.about;for(let i=1;i<=4;i++){if(draft['fact'+i+'Value']!==undefined)byId('editFact'+i+'Value').value=draft['fact'+i+'Value'];if(draft['fact'+i+'Label']!==undefined)byId('editFact'+i+'Label').value=draft['fact'+i+'Label'];}if(draft.goal!==undefined)byId('editGoal').value=draft.goal;if(draft.raised!==undefined)byId('editRaised').value=draft.raised;if(draft.jar!==undefined)byId('editJar').value=draft.jar;if(draft.posterImage){window.currentPosterImage=draft.posterImage;byId('poster').style.backgroundImage='linear-gradient(160deg,rgba(10,10,8,.3),rgba(5,6,5,.78)),url("'+draft.posterImage+'")';byId('poster').style.backgroundSize='cover';byId('poster').style.backgroundPosition='center';}applyEditor();}}catch(e){console.warn('Не удалось восстановить локальный черновик',e);}
+try{const saved=localStorage.getItem('horrorSiteDraft');if(saved){const draft=JSON.parse(saved);if(draft.siteHtml)document.querySelector('.site-root').innerHTML=draft.siteHtml;if(draft.title1)byId('editTitle1').value=draft.title1;if(draft.title2)byId('editTitle2').value=draft.title2;if(draft.lead)byId('editLead').value=draft.lead;if(draft.about)byId('editAbout').value=draft.about;if(draft.goal)byId('editGoal').value=draft.goal;if(draft.raised!==undefined)byId('editRaised').value=draft.raised;if(draft.jar)byId('editJar').value=draft.jar;if(draft.posterImage){window.currentPosterImage=draft.posterImage;byId('poster').style.backgroundImage='linear-gradient(160deg,rgba(10,10,8,.3),rgba(5,6,5,.78)),url("'+draft.posterImage+'")';byId('poster').style.backgroundSize='cover';byId('poster').style.backgroundPosition='center';}}}catch(e){console.warn('Не удалось восстановить локальный черновик',e);}
 byId('toggleEditMode').addEventListener('click',()=>{const root=document.querySelector('.site-root');const active=!root.classList.contains('edit-mode');root.classList.toggle('edit-mode',active);root.querySelectorAll('h1,h2,h3,p,span,strong,small,b,a,.kicker,.section-label').forEach(el=>{if(active){el.setAttribute('contenteditable','true');}else{el.removeAttribute('contenteditable');}});byId('toggleEditMode').textContent=active?'Завершить редактирование':'Включить редактирование текста';byId('adminStatus').textContent=active?'Теперь нажимай на текст сайта и редактируй его прямо на месте.':'Режим редактирования выключен. Нажми «Сохранить онлайн» или скачай HTML.';});
 let pendingSiteImage='';let selectedSiteImage=null;
 byId('universalImageUpload').addEventListener('change',e=>{const file=e.target.files&&e.target.files[0];if(!file)return;if(file.size>8*1024*1024){byId('imageInsertHint').textContent='Файл больше 8 МБ. Выбери изображение поменьше.';e.target.value='';return;}const reader=new FileReader();reader.onload=()=>{const img=new Image();img.onload=()=>{const canvas=document.createElement('canvas');const scale=Math.min(1,1600/Math.max(img.width,img.height));canvas.width=Math.round(img.width*scale);canvas.height=Math.round(img.height*scale);canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);pendingSiteImage=canvas.toDataURL('image/jpeg',.82);document.querySelector('.site-root').classList.add('edit-mode');byId('adminLaunch').textContent='✳ Нажми на странице, чтобы вставить картинку';byId('adminPanel').classList.remove('open');byId('imageInsertHint').textContent='Изображение загружено. Нажми на нужное место страницы — картинка появится рядом с выбранным блоком. После вставки открой редактор снова, чтобы сохранить.';};img.src=reader.result;};reader.readAsDataURL(file);});
@@ -293,5 +662,375 @@ byId('removeSelectedImage').addEventListener('click',()=>{if(!selectedSiteImage|
 byId('posterUpload').addEventListener('change',e=>{const file=e.target.files&&e.target.files[0];if(!file)return;if(file.size>8*1024*1024){byId('adminStatus').textContent='Файл слишком большой. Выбери изображение меньше 8 МБ.';e.target.value='';return;}const reader=new FileReader();reader.onload=()=>{const img=new Image();img.onload=()=>{const canvas=document.createElement('canvas');const scale=Math.min(1,1200/Math.max(img.width,img.height));canvas.width=Math.round(img.width*scale);canvas.height=Math.round(img.height*scale);canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);window.currentPosterImage=canvas.toDataURL('image/jpeg',.78);byId('poster').style.backgroundImage='linear-gradient(160deg,rgba(10,10,8,.3),rgba(5,6,5,.78)),url("'+window.currentPosterImage+'")';byId('poster').style.backgroundSize='cover';byId('poster').style.backgroundPosition='center';byId('adminStatus').textContent='Изображение добавлено. Нажми «Сохранить онлайн» для черновика или «Скачать index.html» для публикации.';};img.src=reader.result;};reader.readAsDataURL(file);});
 byId('removePosterImage').addEventListener('click',()=>{window.currentPosterImage='';byId('poster').style.backgroundImage='';byId('poster').style.backgroundSize='';byId('poster').style.backgroundPosition='';byId('adminStatus').textContent='Изображение постера убрано. Сохрани изменения, чтобы они вступили в силу.';});
 </script>
-</body>
-</html>
+<script>
+(() => {
+  const style = document.createElement("style");
+  style.dataset.sitesPreviewTheme = "live";
+  document.body.append(style);
+  const update = (state) => {
+    if (state && typeof state.css === "string") style.textContent = state.css;
+  };
+  update({"css":""});
+  window.addEventListener("openai:set_globals", (event) => {
+    if (event.detail && event.detail.globals) update(event.detail.globals.sandboxDocumentState);
+  });
+})();
+</script><style data-sites-preview-theme="live"></style>
+
+
+<script>globalThis.__codexVisualizationInitialGlobals={"statePersistence":"host","stateModelContext":"untrusted","visualizationStyleVariables":{"--accent":"rgb(102, 48, 73)","--accent-foreground":"rgb(240, 119, 175)","--background":"rgb(0, 0, 0)","--border":"rgba(255, 255, 255, 0.15)","--border-strong":"rgba(255, 255, 255, 0.2)","--card":"color-mix(in oklab, rgb(237, 237, 237) 5%, transparent)","--card-foreground":"rgb(237, 237, 237)","--corner-shape":"round","--control-spacing":"12px","--cursor-interaction":"pointer","--destructive":"rgb(255, 133, 73)","--font-mono":"ui-monospace, SFMono-Regular, \"SF Mono\", menlo, consolas, \"Liberation Mono\", monospace","--font-sans":"-apple-system-body, ui-sans-serif, -apple-system, system-ui, \"Segoe UI\", Helvetica, \"Apple Color Emoji\", Arial, sans-serif, \"Segoe UI Emoji\", \"Segoe UI Symbol\"","--font-size-base":"16px","--font-weight-normal":"400","--foreground":"rgb(237, 237, 237)","--input":"rgba(255, 255, 255, 0.2)","--muted":"color-mix(in srgb, rgb(237, 237, 237) 10%, transparent)","--muted-foreground":"rgb(175, 175, 175)","--popover":"rgb(48, 48, 48)","--popover-foreground":"rgb(237, 237, 237)","--primary":"rgb(240, 119, 175)","--primary-foreground":"rgb(13, 13, 13)","--radius":"8px","--radius-2xl":"16px","--radius-lg":"8px","--radius-md":"6px","--radius-sm":"4px","--ring":"rgb(240, 119, 175)","--secondary":"rgb(48, 48, 48)","--secondary-foreground":"rgb(237, 237, 237)","--blue":"rgb(240, 119, 175)","--orange":"rgb(251, 106, 34)","--green":"rgb(64, 201, 119)","--red":"rgb(255, 103, 100)","--purple":"rgb(173, 123, 249)","--yellow":"rgb(255, 210, 64)","--visualize-paint-gutter":"0px","--viz-series-1":"rgb(240, 119, 175)","--viz-series-2":"#54ccc2","--viz-series-3":"#f6d459","--viz-series-4":"#6aa3fe","--viz-series-5":"#71d689","--viz-series-6":"#f79950"},"visualizationTheme":"dark"};</script>
+<style id="codex-visualization-host-theme">:root {}</style>
+<script>
+(() => {
+  // Host colors are defaults; later authored styles can give the same names
+  // their own meaning (for example, --muted as a chart's label color).
+  const hostStyles = document.getElementById("codex-visualization-host-theme");
+  const hostStyle = hostStyles.sheet.cssRules[0].style;
+  // Typography, geometry and interaction cursors still follow the host.
+  const styleForProperty = (property) =>
+    /^--(?:font-|radius|corner-shape$|control-spacing$|cursor-interaction$|icon-size$|visualize-paint-gutter$)/.test(property)
+      ? document.documentElement.style
+      : hostStyle;
+  const initialGlobals =
+    globalThis.__codexVisualizationInitialGlobals ?? globalThis.openai;
+  delete globalThis.__codexVisualizationInitialGlobals;
+  if (initialGlobals?.statePersistence != null) {
+    globalThis.openai ??= {};
+    globalThis.openai.statePersistence = initialGlobals.statePersistence;
+    globalThis.openai.stateModelContext = initialGlobals.stateModelContext ?? "none";
+  }
+  if (!false) {
+    return;
+  }
+  let appliedProperties = [];
+  const applyHostStyleVariables = (styleVariables) => {
+    if (styleVariables == null || typeof styleVariables !== "object") {
+      return;
+    }
+    for (const property of appliedProperties) {
+      styleForProperty(property).removeProperty(property);
+    }
+    appliedProperties = [];
+    for (const [property, value] of Object.entries(styleVariables)) {
+      if (property.startsWith("--") && typeof value === "string") {
+        styleForProperty(property).setProperty(property, value);
+        appliedProperties.push(property);
+      }
+    }
+  };
+
+  const syncHostStyles = (globals) => {
+    applyHostStyleVariables(globals?.visualizationStyleVariables);
+    const sandboxDocument = globalThis.frameElement?.ownerDocument;
+    if (sandboxDocument != null && globals?.visualizationTheme != null) {
+      let colorSchemeMeta = sandboxDocument.querySelector(
+        'meta[name="color-scheme"]',
+      );
+      if (colorSchemeMeta == null) {
+        colorSchemeMeta = sandboxDocument.createElement("meta");
+        colorSchemeMeta.name = "color-scheme";
+        sandboxDocument.head.appendChild(colorSchemeMeta);
+      }
+      colorSchemeMeta.content = globals.visualizationTheme;
+      sandboxDocument.documentElement.style.colorScheme =
+        globals.visualizationTheme;
+      // Paint the host surface behind transparent saved visualization documents.
+      sandboxDocument.documentElement.style.backgroundColor =
+        hostStyle.getPropertyValue("--background");
+    }
+  };
+
+  syncHostStyles(initialGlobals);
+  globalThis.addEventListener("openai:set_globals", (event) => {
+    syncHostStyles(event.detail?.globals);
+  });
+})();
+</script>
+<script>
+(() => {
+  const reportEnvironmentError = (value) => {
+    const error = value instanceof Error ? value : new Error(String(value));
+    void globalThis.openai
+      .callTool(
+        "__codex_inline_visualization_error__",
+        {
+          message: error.message,
+          name: error.name,
+          stack: error.stack,
+        },
+      )
+      .catch(() => {});
+  };
+
+  globalThis.addEventListener("error", (event) => {
+    if (event.target?.localName === "script") {
+      // A script's own onerror may render a fallback or load an alternative.
+      // Let that handler run; failures it throws still reach the global error path.
+      const handlesError = typeof event.target.onerror === "function";
+      globalThis.queueMicrotask(() => {
+        if (!handlesError && !event.defaultPrevented) {
+          reportEnvironmentError("Visualization script could not be loaded");
+        }
+      });
+    } else if (event.target === globalThis) {
+      reportEnvironmentError(event.error ?? event.message);
+    }
+  }, true);
+  globalThis.addEventListener("unhandledrejection", (event) => {
+    reportEnvironmentError(event.reason);
+  });
+})();
+</script>
+<script id="codex-visualization-variants">
+(() => {
+  let previousSnapshot = "[]";
+  let roots = [];
+  const report = () => {
+    roots = Array.from(
+      document.querySelectorAll(".viz-carousel[data-active-variant]"),
+    ).slice(0, 32);
+    const selectedVariants = roots.flatMap((root, carousel) => {
+      const variant = root.dataset.activeVariant;
+      const label = root.getAttribute("aria-label")?.slice(0, 256);
+      return variant ? [{
+        carousel,
+        ...(label == null ? {} : { label }),
+        variant: variant.slice(0, 256),
+      }] : [];
+    });
+    const snapshot = JSON.stringify(selectedVariants);
+    if (snapshot !== previousSnapshot) {
+      previousSnapshot = snapshot;
+      void globalThis.openai.callTool("__codex_visualization_annotations__", {
+        type: "variants",
+        selectedVariants,
+      }).catch(() => {});
+    }
+  };
+  const observer = new MutationObserver((records) => {
+    if (records.some((record) => record.type === "attributes") || roots.some((root) => !root.isConnected)) {
+      report();
+    }
+  });
+  observer.observe(document, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ["data-active-variant"],
+  });
+  report();
+  globalThis.addEventListener("pagehide", () => observer.disconnect(), { once: true });
+})();
+</script>
+<script>
+(() => {
+  let isHovering = false;
+  let isTouch = false;
+  const reportHover = (nextIsHovering, nextIsTouch = false) => {
+    if (nextIsHovering === isHovering && nextIsTouch === isTouch) {
+      return;
+    }
+    isHovering = nextIsHovering;
+    isTouch = nextIsTouch;
+    void globalThis.openai
+      .callTool(
+        "__codex_inline_visualization_hover__",
+        isTouch ? { isHovering, pointerType: "touch" } : { isHovering },
+      )
+      .catch(() => {});
+  };
+
+  globalThis.addEventListener(
+    "pointerover",
+    (event) =>
+      reportHover(event.pointerType !== "touch", event.pointerType === "touch"),
+    { capture: true },
+  );
+  globalThis.addEventListener(
+    "pointerout",
+    (event) => {
+      if (event.pointerType !== "touch" && event.relatedTarget == null) {
+        reportHover(false);
+      }
+    },
+    { capture: true },
+  );
+})();
+</script>
+<script>
+(() => {
+  const report = (method) => {
+    void globalThis.openai.callTool("__codex_inline_visualization_input__", { method }).catch(() => {});
+  };
+  globalThis.addEventListener("pointerdown", () => report("pointer"), { capture: true });
+  globalThis.addEventListener("keydown", (event) => {
+    if (!event.isComposing && event.key !== "Shift" && !event.altKey && !event.ctrlKey && !event.metaKey) {
+      report(["Tab","ArrowLeft","ArrowRight","ArrowUp","ArrowDown"].includes(event.key) ? "keyboard-navigation" : "keyboard");
+    }
+  }, { capture: true });
+})();
+</script>
+<script>
+(() => {
+  const bubbledClicks = new WeakSet();
+  const interactiveSelector = [
+    "button", "input", "select", "textarea", "label", "summary", "a[href]",
+    "audio[controls]", "video[controls]", "[onclick]", "[data-visualization-interactive]",
+    '[contenteditable]:not([contenteditable="false"])',
+    ...[
+      "button", "checkbox", "combobox", "gridcell", "link", "listbox",
+      "menuitem", "menuitemcheckbox", "menuitemradio", "option", "radio",
+      "scrollbar", "searchbox", "slider", "spinbutton", "switch", "tab",
+      "textbox", "treeitem",
+    ].map((role) => '[role~="' + role + '"]'),
+  ].join(",");
+
+  globalThis.addEventListener("click", (event) => bubbledClicks.add(event));
+  globalThis.addEventListener("click", (event) => {
+    // Capture the path before a control can remove itself. Custom delegated
+    // controls can opt in with data-visualization-interactive.
+    const elements = event.composedPath().filter((target) => target instanceof Element);
+    const isInteractiveTarget = elements.some((element) =>
+      element.matches(interactiveSelector) ||
+      (element.hasAttribute("tabindex") && element.tabIndex >= 0)) ||
+      (elements[0] != null && getComputedStyle(elements[0]).cursor === "pointer");
+    // Use a task, not a microtask: native dispatch can run microtasks between
+    // listeners. Propagation flags are reset when dispatch finishes:
+    // https://dom.spec.whatwg.org/#concept-event-dispatch
+    globalThis.setTimeout(() => {
+      void globalThis.openai.callTool("__codex_inline_visualization_click__", {
+        isInteractive: isInteractiveTarget || event.defaultPrevented ||
+          (event.bubbles && !bubbledClicks.has(event)),
+      }).catch(() => {});
+    }, 0);
+  }, { capture: true });
+})();
+</script>
+<script>
+(() => {
+  globalThis.addEventListener("keydown", (event) => {
+    if (event.isComposing || event.altKey || event.ctrlKey || event.metaKey ||
+      event.shiftKey || !["ArrowLeft", "ArrowRight", "Escape"].includes(event.key)) {
+      return;
+    }
+    const target = event.composedPath().find((element) => element instanceof HTMLElement);
+    const editable = target?.closest("[contenteditable]");
+    const editing = target && (target.isContentEditable ||
+      (editable && editable.getAttribute("contenteditable") !== "false") ||
+      target.closest('input, textarea, select, [role="slider"], [role="spinbutton"], [role="combobox"], [role="listbox"], [role="grid"], [role="tree"], [role="tablist"], [role="menu"]'));
+    if (event.key !== "Escape" && editing) { return; }
+    // Let the widget handle the key before forwarding it across the sandbox.
+    globalThis.setTimeout(() => {
+      if (!event.defaultPrevented && globalThis.openai?.displayMode === "fullscreen") {
+        void globalThis.openai.callTool("__codex_inline_visualization_preview_key__", {
+          key: event.key,
+        }).catch(() => {});
+      }
+    }, 0);
+  });
+})();
+</script>
+
+
+
+
+<script>
+(() => {
+  const contentRange = document.createRange();
+  let previousMeasurement = null;
+  let heightReportTimer = null;
+  const reportHeight = () => {
+    const bodyChildren = Array.from(document.body.children).filter(
+      (element) =>
+        element.tagName !== "SCRIPT" &&
+        element.tagName !== "STYLE" &&
+        element.getAttribute("role") !== "tooltip",
+    );
+    const bodyStyle = globalThis.getComputedStyle(document.body);
+    const contentWidth = Math.max(
+      0,
+      Math.round(
+        globalThis.innerWidth -
+          parseFloat(bodyStyle.paddingLeft) -
+          parseFloat(bodyStyle.paddingRight),
+      ),
+    );
+    let contentHeight;
+    if (bodyChildren.length === 0) {
+      contentRange.selectNodeContents(document.body);
+      contentHeight = contentRange.getBoundingClientRect().height;
+    } else if (bodyChildren.length === 1) {
+      const [bodyChild] = bodyChildren;
+      const childRect = bodyChild.getBoundingClientRect();
+      // Child margins can collapse above the root without adding to its height.
+      // The host adds body padding separately.
+      contentHeight =
+        Math.max(bodyChild.scrollHeight, childRect.height) +
+        Math.max(
+          0,
+          childRect.top -
+            document.body.getBoundingClientRect().top -
+            parseFloat(bodyStyle.paddingTop),
+        );
+    } else {
+      const bodyTop = document.body.getBoundingClientRect().top;
+      contentHeight = Math.max(
+        ...bodyChildren.map(
+          (bodyChild) => bodyChild.getBoundingClientRect().bottom - bodyTop,
+        ),
+      );
+    }
+    const viewportHeight = globalThis.innerHeight;
+    const previous = previousMeasurement;
+    previousMeasurement = { contentHeight, contentWidth, viewportHeight };
+    if (
+      previous != null &&
+      contentWidth === previous.contentWidth &&
+      contentHeight - previous.contentHeight ===
+        viewportHeight - previous.viewportHeight
+    ) {
+      return;
+    }
+
+    void globalThis.openai
+      .callTool(
+        "__codex_inline_visualization_height__",
+        { height: contentHeight, width: contentWidth },
+      )
+      .catch(() => {});
+  };
+  const scheduleHeightReport = () => {
+    if (heightReportTimer != null) {
+      return;
+    }
+    // Offscreen frames can suspend animation callbacks while their content loads.
+    heightReportTimer = globalThis.setTimeout(() => {
+      heightReportTimer = null;
+      reportHeight();
+    }, 0);
+  };
+
+  const resizeObserver = new ResizeObserver(scheduleHeightReport);
+  const observeBodyChildren = () => {
+    for (const element of document.body.children) {
+      resizeObserver.observe(element);
+    }
+  };
+  resizeObserver.observe(document.body);
+  observeBodyChildren();
+  new MutationObserver(() => {
+    observeBodyChildren();
+    scheduleHeightReport();
+  }).observe(document.body, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ["style", "class", "height", "width"],
+  });
+  globalThis.addEventListener("resize", scheduleHeightReport);
+  reportHeight();
+})();
+</script>
+<style id="codex-visualization-document-scrollbar">html,body{scrollbar-width:none!important}html::-webkit-scrollbar,body::-webkit-scrollbar{display:none!important}</style>
+
+</body><div data-sites-preview-runtime="" aria-hidden="true" popover="manual"></div><style data-sites-preview-runtime="" media="not all">:root, :root * { cursor: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2226%22%20height%3D%2226%22%20viewBox%3D%220%200%2026%2026%22%3E%3Cpath%20d%3D%22M13%200.825a12.175%2012.175%200%200%201%200%2024.35H3a2.175%202.175%200%200%201-2.175-2.175V13A12.175%2012.175%200%200%201%2013%200.825Z%22%20fill%3D%22%23339cff%22%20stroke%3D%22white%22%20stroke-width%3D%221.65%22%2F%3E%3C%2Fsvg%3E") 0 25, crosshair !important; }</style></html>
