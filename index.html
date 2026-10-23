@@ -84,6 +84,26 @@ h2 { font-size:clamp(34px, 5vw, 62px); line-height:.98; letter-spacing:-.04em; m
 .step p { color:#aeb0a5; font-size:12px; line-height:1.7; margin:0; }
 footer { display:flex; justify-content:space-between; gap:20px; padding:25px clamp(20px, 6vw, 88px); border-top:1px solid rgba(255,255,255,.12); color:#85877e; font-size:10px; letter-spacing:.08em; text-transform:uppercase; }
 footer a { color:var(--site-primary); text-decoration:none; }
+.admin-launch { position:fixed; right:16px; bottom:16px; z-index:20; border:1px solid rgba(216,255,62,.55); background:#171914; color:#d8ff3e; padding:12px 15px; font:700 12px var(--site-font-body); cursor:pointer; box-shadow:0 8px 30px #0008; }
+.admin-panel { display:none; position:fixed; z-index:30; inset:0; overflow:auto; background:rgba(5,6,5,.92); padding:24px; }
+.admin-panel.open { display:block; }
+.admin-inner { max-width:760px; margin:20px auto; padding:26px; background:#171914; color:#f4f4ed; border:1px solid #414536; }
+.admin-inner h2 { font-size:32px; margin-bottom:8px; }
+.admin-help { color:#b8bab0; font-size:13px; line-height:1.6; margin-bottom:22px; }
+.admin-fields { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+.admin-field { display:flex; flex-direction:column; gap:7px; font-size:12px; color:#d8ff3e; }
+.admin-field.full { grid-column:1/-1; }
+.admin-field input, .admin-field textarea { width:100%; padding:12px; background:#0d0e0c; color:#f4f4ed; border:1px solid #45483a; font:14px var(--site-font-body); }
+.admin-field textarea { min-height:90px; resize:vertical; }
+.admin-actions { display:flex; flex-wrap:wrap; gap:10px; margin-top:20px; }
+.admin-status { color:#d8ff3e; font-size:12px; margin-top:14px; min-height:18px; }
+.admin-login { max-width:430px; margin:10vh auto; padding:28px; background:#171914; color:#f4f4ed; border:1px solid #414536; }
+.admin-login h2 { font-size:28px; margin:10px 0; }
+.admin-login p { color:#b8bab0; font-size:13px; line-height:1.6; }
+.admin-login form { display:grid; gap:12px; margin-top:20px; }
+.admin-login input { width:100%; padding:13px; background:#0d0e0c; color:#f4f4ed; border:1px solid #45483a; font:14px var(--site-font-body); }
+.admin-login[hidden], .admin-inner[hidden] { display:none; }
+@media(max-width:600px) { .admin-fields { grid-template-columns:1fr; } .admin-field.full { grid-column:auto; } .admin-inner { padding:18px; } .admin-panel { padding:10px; } }
 @media(max-width:800px) { .hero { grid-template-columns:1fr; min-height:unset; padding-top:70px; } .poster { min-height:380px; max-width:390px; justify-self:start; } .about-grid,.fund-grid { grid-template-columns:1fr; gap:35px; } .steps { grid-template-columns:1fr; gap:25px; } .nav-note { display:none; } }
 @media(max-width:480px) { h1 { font-size:65px; } .poster { min-height:340px; } .facts { gap:8px; } .fact { padding:16px; } .fund-card { padding:22px; } footer { flex-direction:column; } }
 </style>
@@ -133,6 +153,32 @@ footer a { color:var(--site-primary); text-decoration:none; }
 </main>
 <footer><span>© 2026 · Независимое кино</span><span>Сделано с благодарностью к каждому зрителю</span><a href="#fund">Поддержать проект ↑</a></footer>
 </div>
+<button class="admin-launch" id="adminLaunch" type="button">⚙ Редактор сайта</button>
+<div class="admin-panel" id="adminPanel" role="dialog" aria-modal="true" aria-label="Редактор сайта">
+  <div class="admin-login" id="adminLogin">
+    <div class="section-label">ЗАЩИЩЁННЫЙ ДОСТУП</div><h2>Вход в админку</h2>
+    <p>Войди через Supabase Auth. Пароль не хранится в коде сайта. Сначала настрой проект Supabase и таблицу по инструкции, которую я дам отдельно.</p>
+    <form id="adminLoginForm"><input id="adminEmail" type="email" autocomplete="username" placeholder="Email администратора" required><input id="adminPassword" type="password" autocomplete="current-password" placeholder="Пароль" required><button class="btn btn-primary" type="submit">Войти</button><button class="btn btn-outline" id="cancelLogin" type="button">Закрыть</button></form>
+    <div class="admin-status" id="loginStatus" aria-live="polite"></div>
+  </div>
+  <div class="admin-inner">
+    <div class="section-label">ПАНЕЛЬ УПРАВЛЕНИЯ</div>
+    <h2>Редактор сайта</h2>
+    <p class="admin-help">Измени тексты, ссылку на банку и цифры сбора. «Сохранить онлайн» запишет изменения в подключённую базу Supabase, а посетители увидят их при открытии сайта. «Скачать index.html» оставляет возможность экспорта.</p>
+    <div class="admin-fields">
+      <label class="admin-field full">Главный заголовок — первая строка<input id="editTitle1" value="Помоги"></label>
+      <label class="admin-field full">Главный заголовок — акцентная строка<input id="editTitle2" value="историю."></label>
+      <label class="admin-field full">Короткое описание на первом экране<textarea id="editLead">Мы создаём короткометражный хоррор — историю о страхе, который приходит незаметно. Поддержи независимое кино и помоги нам превратить сценарий в настоящий фильм.</textarea></label>
+      <label class="admin-field full">Описание проекта<textarea id="editAbout">Это независимый короткометражный хоррор, который мы создаём небольшой командой. Наша цель — снять атмосферный фильм с сильной визуальной подачей, продуманным звуком и настоящим напряжением. Каждый вклад помогает приблизить съёмочный день.</textarea></label>
+      <label class="admin-field">Цель сбора, грн<input id="editGoal" type="number" min="1" value="20000"></label>
+      <label class="admin-field">Уже собрано, грн<input id="editRaised" type="number" min="0" value="0"></label>
+      <label class="admin-field full">Ссылка на банку Monobank<input id="editJar" type="url" value="https://send.monobank.ua/" placeholder="https://send.monobank.ua/jar/..."></label>
+    </div>
+    <div class="admin-actions"><button class="btn btn-primary" id="saveOnline" type="button">Сохранить онлайн</button><button class="btn btn-outline" id="applyEdits" type="button">Применить для просмотра</button><button class="btn btn-outline" id="downloadHtml" type="button">Скачать index.html</button><button class="btn btn-outline" id="adminLogout" type="button">Выйти</button><button class="btn btn-outline" id="closeAdmin" type="button">Закрыть</button></div>
+    <div class="admin-status" id="adminStatus" aria-live="polite"></div>
+  </div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
 // НАСТРОЙКИ ПЕРЕД ПУБЛИКАЦИЕЙ:
 // 1) Вставьте ссылку на свою банку вместо https://send.monobank.ua/ в href кнопки ниже.
@@ -141,6 +187,15 @@ footer a { color:var(--site-primary); text-decoration:none; }
 const JAR_URL = 'https://send.monobank.ua/';
 const RAISED_UAH = 0;
 const GOAL_UAH = 20000;
+// НАСТРОЙКИ SUPABASE — ИЩИ ЭТОТ КОММЕНТАРИЙ В КОДЕ (Ctrl+F: НАСТРОЙКИ SUPABASE)
+// Вставь Project URL и Publishable/anon key из настроек своего проекта Supabase.
+// Never put a service_role key or any database password in browser code.
+const SUPABASE_URL = 'https://mthkieqrtpcembhpiiku.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_7t8cCY4QpxL6NWm-c6EBKw_4AHA_dcL';
+let supabaseClient = null;
+if (window.supabase && SUPABASE_URL.startsWith('https://') && !SUPABASE_ANON_KEY.includes('PASTE_')) {
+  supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+}
 document.getElementById('donateButton').href = JAR_URL;
 const raised = Math.max(0, Number(RAISED_UAH) || 0);
 const goal = Math.max(1, Number(GOAL_UAH) || 1);
@@ -151,6 +206,22 @@ document.getElementById('goalLabel').textContent = 'Цель: ' + money(goal);
 document.getElementById('percent').textContent = percent + '%';
 document.getElementById('remaining').textContent = 'Осталось: ' + money(Math.max(0, goal - raised));
 document.getElementById('progressFill').style.width = percent + '%';
+// Редактор контента: изменения можно применить к предпросмотру и экспортировать в HTML.
+const byId = id => document.getElementById(id);
+const editorDefaults = {title1:'Помоги',title2:'историю.',lead:byId('editLead').value,about:byId('editAbout').value,goal:20000,raised:0,jar:'https://send.monobank.ua/'};
+function readEditor(){return {title1:byId('editTitle1').value,title2:byId('editTitle2').value,lead:byId('editLead').value,about:byId('editAbout').value,goal:Math.max(1,Number(byId('editGoal').value)||1),raised:Math.max(0,Number(byId('editRaised').value)||0),jar:byId('editJar').value.trim()||'https://send.monobank.ua/'};}
+function applyPublicData(d){if(!d)return;byId('editTitle1').value=d.title1||'Помоги';byId('editTitle2').value=d.title2||'историю.';byId('editLead').value=d.lead||'';byId('editAbout').value=d.about||'';byId('editGoal').value=Number(d.goal)||20000;byId('editRaised').value=Number(d.raised)||0;byId('editJar').value=d.jar||'https://send.monobank.ua/';const h=document.querySelector('h1');h.replaceChildren(document.createTextNode((d.title1||'Помоги')+' '));const s=document.createElement('span');s.textContent=d.title2||'историю.';h.append(s);document.querySelector('.lead').textContent=d.lead||'';document.querySelector('.about-copy').textContent=d.about||'';byId('donateButton').href=d.jar||'https://send.monobank.ua/';const goal=Math.max(1,Number(d.goal)||20000),raised=Math.max(0,Number(d.raised)||0),p=Math.min(100,Math.round(raised/goal*100));byId('raised').textContent=money(raised);byId('goalLabel').textContent='Цель: '+money(goal);byId('percent').textContent=p+'%';byId('remaining').textContent='Осталось: '+money(Math.max(0,goal-raised));byId('progressFill').style.width=p+'%';}
+function applyEditor(){const d=readEditor();applyPublicData(d);byId('adminStatus').textContent='Изменения применены только к этому просмотру. Нажми «Сохранить онлайн», чтобы опубликовать их для посетителей.';return d;}
+async function loadOnlineContent(){if(!supabaseClient)return;const {data,error}=await supabaseClient.from('site_content').select('content').eq('id',1).maybeSingle();if(!error&&data&&data.content)applyPublicData(data.content);}
+byId('adminLaunch').addEventListener('click',()=>{byId('adminPanel').classList.add('open');byId('adminLogin').hidden=false;document.querySelector('.admin-inner').hidden=true;byId('loginStatus').textContent=supabaseClient?'':'Сначала настрой Supabase: в коде ещё не указаны Project URL и publishable/anon key.';});
+byId('cancelLogin').addEventListener('click',()=>byId('adminPanel').classList.remove('open'));
+byId('adminLoginForm').addEventListener('submit',async e=>{e.preventDefault();if(!supabaseClient){byId('loginStatus').textContent='Supabase не настроен. Добавь Project URL и publishable/anon key в коде, затем опубликуй сайт заново.';return;}byId('loginStatus').textContent='Проверяю данные…';const {error}=await supabaseClient.auth.signInWithPassword({email:byId('adminEmail').value,password:byId('adminPassword').value});if(error){byId('loginStatus').textContent='Не удалось войти. Проверь email, пароль и настройки Supabase.';return;}byId('adminLogin').hidden=true;document.querySelector('.admin-inner').hidden=false;byId('loginStatus').textContent='';const {data}=await supabaseClient.from('site_content').select('content').eq('id',1).maybeSingle();if(data?.content)applyPublicData(data.content);});
+byId('saveOnline').addEventListener('click',async()=>{if(!supabaseClient){byId('adminStatus').textContent='Supabase не настроен: добавь Project URL и publishable/anon key в коде.';return;}const {data:{session}}=await supabaseClient.auth.getSession();if(!session){byId('adminStatus').textContent='Сначала войди в админку.';return;}const d=readEditor();const {error}=await supabaseClient.from('site_content').upsert({id:1,content:d,updated_at:new Date().toISOString()});if(error){byId('adminStatus').textContent='Не удалось сохранить. Проверь SQL-таблицу и политики доступа Supabase.';return;}applyPublicData(d);byId('adminStatus').textContent='Сохранено онлайн. Посетители увидят обновления после перезагрузки сайта.';});
+byId('adminLogout').addEventListener('click',async()=>{if(supabaseClient)await supabaseClient.auth.signOut();document.querySelector('.admin-inner').hidden=true;byId('adminLogin').hidden=false;byId('loginStatus').textContent='Ты вышел из админки.';});
+if(supabaseClient)loadOnlineContent();
+byId('closeAdmin').addEventListener('click',()=>byId('adminPanel').classList.remove('open'));
+byId('applyEdits').addEventListener('click',applyEditor);
+byId('downloadHtml').addEventListener('click',()=>{const d=applyEditor();let html='<!doctype html>\n'+document.documentElement.outerHTML;html=html.replace(/const JAR_URL = '[^']*';/, 'const JAR_URL = '+JSON.stringify(d.jar)+';').replace(/const RAISED_UAH = [^;]*;/, 'const RAISED_UAH = '+d.raised+';').replace(/const GOAL_UAH = [^;]*;/, 'const GOAL_UAH = '+d.goal+';');const blob=new Blob([html],{type:'text/html;charset=utf-8'});const link=document.createElement('a');link.href=URL.createObjectURL(blob);link.download='index.html';link.click();URL.revokeObjectURL(link.href);byId('adminStatus').textContent='Файл index.html скачан. Загрузи его вместо старого файла в GitHub, чтобы опубликовать изменения.';});
 </script>
 </body>
 </html>
